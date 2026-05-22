@@ -1,0 +1,6 @@
+{
+  "name": "Toolpath Splitter and Editor",
+  "description": "An interactive utility to import toolpath CSV files, split them into segments grouped by Z-axis, modify coordinates by dragging points on a 2D grid, and export the updated sequence.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
