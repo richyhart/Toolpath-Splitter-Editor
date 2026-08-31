@@ -5,7 +5,7 @@
 
 import React, { useRef, useState, useMemo, useEffect } from "react";
 import { ToolpathPoint, GridSettings } from "../types";
-import { ZoomIn, ZoomOut, Compass, Info } from "lucide-react";
+import { ZoomIn, ZoomOut, Compass, Info, RefreshCw, Grid, Ruler } from "lucide-react";
 
 interface InteractiveGridProps {
   points: ToolpathPoint[];
@@ -18,6 +18,7 @@ interface InteractiveGridProps {
   highlightColor?: string;
   activeSegmentId?: string;
   onDragStart?: () => void;
+  fileName?: string;
 }
 
 export default function InteractiveGrid({
@@ -30,7 +31,8 @@ export default function InteractiveGrid({
   setGridSettings,
   highlightColor = "#809fff",
   activeSegmentId,
-  onDragStart
+  onDragStart,
+  fileName
 }: InteractiveGridProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
@@ -45,25 +47,143 @@ export default function InteractiveGrid({
   const [hoveredGridCoords, setHoveredGridCoords] = useState<{ x: number; y: number } | null>(null);
   const [mouseScreenCoords, setMouseScreenCoords] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
 
+  // Axis swapping toggle (X <=> Y)
+  const [swapXY, setSwapXY] = useState(false);
+
+  // Measurement Tool States
+  const [isMeasuring, setIsMeasuring] = useState(false);
+  const [measurePoint1, setMeasurePoint1] = useState<ToolpathPoint | null>(null);
+  const [measurePoint2, setMeasurePoint2] = useState<ToolpathPoint | null>(null);
+
+  const handleMeasureSelect = (pt: ToolpathPoint) => {
+    if (!measurePoint1) {
+      setMeasurePoint1(pt);
+    } else if (!measurePoint2) {
+      if (pt.id !== measurePoint1.id) {
+        setMeasurePoint2(pt);
+      } else {
+        setMeasurePoint1(null);
+      }
+    } else {
+      if (pt.id === measurePoint1.id) {
+        setMeasurePoint1(measurePoint2);
+        setMeasurePoint2(null);
+      } else if (pt.id === measurePoint2.id) {
+        setMeasurePoint2(null);
+      } else {
+        setMeasurePoint1(pt);
+        setMeasurePoint2(null);
+      }
+    }
+  };
+
   // SVG Size state
   const [dimensions, setDimensions] = useState({ width: 600, height: 600 });
+
+  // User custom resize dimensions state
+  const [customSize, setCustomSize] = useState<{ width: number; height: number } | null>(null);
+  const [isResizing, setIsResizing] = useState<"width" | "height" | "both" | null>(null);
+  const resizeStart = useRef<{ x: number; y: number; w: number; h: number }>({ x: 0, y: 0, w: 0, h: 0 });
+
+  useEffect(() => {
+    if (!isResizing) return;
+
+    const handleMouseMoveGlobal = (e: MouseEvent) => {
+      const dx = e.clientX - resizeStart.current.x;
+      const dy = e.clientY - resizeStart.current.y;
+      
+      let nextW = resizeStart.current.w;
+      let nextH = resizeStart.current.h;
+
+      if (isResizing === "width" || isResizing === "both") {
+        nextW = Math.max(300, resizeStart.current.w + dx);
+      }
+      if (isResizing === "height" || isResizing === "both") {
+        nextH = Math.max(350, resizeStart.current.h + dy);
+      }
+
+      setCustomSize({ width: nextW, height: nextH });
+    };
+
+    const handleMouseUpGlobal = () => {
+      setIsResizing(null);
+    };
+
+    window.addEventListener("mousemove", handleMouseMoveGlobal);
+    window.addEventListener("mouseup", handleMouseUpGlobal);
+
+    return () => {
+      window.removeEventListener("mousemove", handleMouseMoveGlobal);
+      window.removeEventListener("mouseup", handleMouseUpGlobal);
+    };
+  }, [isResizing]);
 
   // Monitor size of parent block to be responsive
   useEffect(() => {
     if (!containerRef.current) return;
     const updateSize = () => {
-      const w = containerRef.current?.clientWidth || 600;
-      const h = containerRef.current?.clientHeight || 600;
-      const squareSize = Math.min(w, h);
-      setDimensions({
-        width: squareSize,
-        height: squareSize,
-      });
+      if (customSize) {
+        setDimensions({
+          width: customSize.width,
+          height: customSize.height,
+        });
+      } else {
+        const w = containerRef.current?.clientWidth || 600;
+        const h = containerRef.current?.clientHeight || 600;
+        const squareSize = Math.min(w, h);
+        setDimensions({
+          width: squareSize,
+          height: squareSize,
+        });
+      }
     };
     updateSize();
     window.addEventListener("resize", updateSize);
     return () => window.removeEventListener("resize", updateSize);
-  }, []);
+  }, [customSize]);
+
+  // Update control for scroll wheel + CTRL key zoom, bypassing passive listener limits to prevent browser-wide zoom scaling
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    const handleWheel = (e: WheelEvent) => {
+      if (e.ctrlKey) {
+        e.preventDefault(); // Strongly prevent default page-scaling behavior
+
+        // Zoom-in for wheel scroll up (deltaY < 0), Zoom-out for wheel scroll down
+        const factor = e.deltaY < 0 ? 1.12 : 0.88;
+
+        // Obtain cursor coordinates relative to the SVG boundaries
+        const rect = svgRef.current?.getBoundingClientRect();
+        if (!rect) return;
+        const mouseX = e.clientX - rect.left;
+        const mouseY = e.clientY - rect.top;
+
+        setGridSettings((prev) => {
+          // Keep zoom state within safe operational bounds (max 120, min 0.1)
+          const nextZoom = Math.max(Math.min(prev.zoom * factor, 120), 0.1);
+
+          // Find the CNC/machine coordinates under the cursor before applying zoom
+          const rawX = (mouseX - prev.offsetX) / prev.zoom;
+          const rawY = (prev.offsetY - mouseY) / prev.zoom;
+
+          // Align the same coordinate with the current mouse position in the expanded zoom coordinate space
+          return {
+            ...prev,
+            zoom: nextZoom,
+            offsetX: mouseX - rawX * nextZoom,
+            offsetY: mouseY + rawY * nextZoom,
+          };
+        });
+      }
+    };
+
+    container.addEventListener("wheel", handleWheel, { passive: false });
+    return () => {
+      container.removeEventListener("wheel", handleWheel);
+    };
+  }, [setGridSettings, swapXY]);
 
   // Compute machine coordinate bounds to automatically scale and frame the view
   const bounds = useMemo(() => {
@@ -102,36 +222,45 @@ export default function InteractiveGrid({
     const usableW = dimensions.width * (1 - margin);
     const usableH = dimensions.height * (1 - margin);
 
-    const scaleX = usableH / bounds.height;
-    const scaleY = usableW / bounds.width;
+    const currentBoundW = swapXY ? bounds.height : bounds.width;
+    const currentBoundH = swapXY ? bounds.width : bounds.height;
+
+    const scaleX = usableH / currentBoundH;
+    const scaleY = usableW / currentBoundW;
     const baseZoom = Math.min(scaleX, scaleY, 15.0);
+
+    const cx = swapXY ? bounds.centerY : bounds.centerX;
+    const cy = swapXY ? bounds.centerX : bounds.centerY;
 
     setGridSettings((prev) => ({
       ...prev,
       zoom: baseZoom > 0.1 ? baseZoom : 4.0,
-      offsetX: dimensions.width / 2 - bounds.centerX * (baseZoom > 0.1 ? baseZoom : 4.0),
-      offsetY: dimensions.height / 2 + bounds.centerY * (baseZoom > 0.1 ? baseZoom : 4.0),
+      offsetX: dimensions.width / 2 - cx * (baseZoom > 0.1 ? baseZoom : 4.0),
+      offsetY: dimensions.height / 2 + cy * (baseZoom > 0.1 ? baseZoom : 4.0),
     }));
   };
 
-  // Run auto fit when active segment, dimensions or points count change, but not on coordinate updates
-  const pointsLength = points.length;
+  // Run auto fit ONLY on initial mount, window resize, coordinate flip/swap, or when a completely new file is loaded
   useEffect(() => {
     handleAutoFit();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeSegmentId, dimensions.width, dimensions.height, pointsLength]);
+  }, [fileName, dimensions.width, dimensions.height, swapXY]);
 
   // Map CNC coordinates to screen coordinates
   const project = (x: number, y: number) => {
-    const screenX = gridSettings.offsetX + x * gridSettings.zoom;
-    const screenY = gridSettings.offsetY - y * gridSettings.zoom;
+    const px = swapXY ? y : x;
+    const py = swapXY ? x : y;
+    const screenX = gridSettings.offsetX + px * gridSettings.zoom;
+    const screenY = gridSettings.offsetY - py * gridSettings.zoom;
     return { x: screenX, y: screenY };
   };
 
   // Map screen mouse position back to CNC coordinates
   const deproject = (screenX: number, screenY: number) => {
-    const x = (screenX - gridSettings.offsetX) / gridSettings.zoom;
-    const y = (gridSettings.offsetY - screenY) / gridSettings.zoom;
+    const rawX = (screenX - gridSettings.offsetX) / gridSettings.zoom;
+    const rawY = (gridSettings.offsetY - screenY) / gridSettings.zoom;
+    const x = swapXY ? rawY : rawX;
+    const y = swapXY ? rawX : rawY;
     return { x, y };
   };
 
@@ -147,14 +276,14 @@ export default function InteractiveGrid({
 
       const nextZoom = Math.max(Math.min(prev.zoom * factor, 120), 0.1);
 
-      const originalCenterX = (cX - prev.offsetX) / prev.zoom;
-      const originalCenterY = (prev.offsetY - cY) / prev.zoom;
+      const rawCenterX = (cX - prev.offsetX) / prev.zoom;
+      const rawCenterY = (prev.offsetY - cY) / prev.zoom;
 
       return {
         ...prev,
         zoom: nextZoom,
-        offsetX: cX - originalCenterX * nextZoom,
-        offsetY: cY + originalCenterY * nextZoom,
+        offsetX: cX - rawCenterX * nextZoom,
+        offsetY: cY + rawCenterY * nextZoom,
       };
     });
   };
@@ -232,10 +361,17 @@ export default function InteractiveGrid({
     const leftTop = deproject(0, 0);
     const rightBottom = deproject(dimensions.width, dimensions.height);
 
-    const startX = Math.floor(leftTop.x / size) * size;
-    const endX = Math.ceil(rightBottom.x / size) * size;
-    const startY = Math.floor(rightBottom.y / size) * size;
-    const endY = Math.ceil(leftTop.y / size) * size;
+    const xCoords = [leftTop.x, rightBottom.x];
+    const yCoords = [leftTop.y, rightBottom.y];
+    const minX = Math.min(...xCoords);
+    const maxX = Math.max(...xCoords);
+    const minY = Math.min(...yCoords);
+    const maxY = Math.max(...yCoords);
+
+    const startX = Math.floor(minX / size) * size;
+    const endX = Math.ceil(maxX / size) * size;
+    const startY = Math.floor(minY / size) * size;
+    const endY = Math.ceil(maxY / size) * size;
 
     const lines: Array<{ path: string; isOrigin: boolean }> = [];
 
@@ -260,7 +396,7 @@ export default function InteractiveGrid({
     }
 
     return lines;
-  }, [gridSettings, dimensions, project, deproject]);
+  }, [gridSettings, dimensions, project, deproject, swapXY]);
 
   // Generate paths
   const pathElements = useMemo(() => {
@@ -320,11 +456,16 @@ export default function InteractiveGrid({
 
   return (
     <div 
-      className="relative w-full h-full flex flex-col bg-[#f7f5e1] border border-slate-300 rounded-lg overflow-hidden self-stretch shadow-lg" 
+      className="relative flex flex-col bg-[#f7f5e1] border border-slate-300 rounded-lg overflow-hidden self-stretch shadow-lg" 
       ref={containerRef}
+      style={{
+        width: customSize ? `${customSize.width}px` : "100%",
+        height: customSize ? `${customSize.height}px` : "100%",
+        minWidth: "300px",
+        minHeight: "350px",
+        maxWidth: "100%",
+      }}
     >
-      {/* Black grid background lines overlay */}
-      <div className="absolute inset-0 grid-bg opacity-40 pointer-events-none z-0"></div>
 
       {/* Overlays top-left: Controller buttons with strict event separation */}
       <div 
@@ -359,6 +500,55 @@ export default function InteractiveGrid({
           <Compass className="w-3.5 h-3.5 text-indigo-600" />
           <span>FIT VIEW</span>
         </button>
+        <div className="w-px h-5 bg-slate-200 self-center mx-0.5"></div>
+        <button
+          onClick={() => setSwapXY((prev) => !prev)}
+          className={`p-1 px-2.5 border rounded transition-all font-mono text-xs font-semibold flex items-center justify-center gap-1 cursor-pointer ${
+            swapXY
+              ? "bg-indigo-600 border-indigo-700 text-white hover:bg-indigo-700"
+              : "bg-slate-100 hover:bg-slate-200 border-slate-300 text-slate-800"
+          }`}
+          style={{ width: "120px", height: "26px" }}
+          title="Flip X to Y axis and vice versa"
+          id="swap-xy-btn"
+        >
+          <RefreshCw className={`w-3.5 h-3.5 transition-transform duration-300 ${swapXY ? "text-white rotate-180" : "text-indigo-600"}`} />
+          <span>FLIP X ⇋ Y</span>
+        </button>
+        <button
+          onClick={() => setGridSettings((prev) => ({ ...prev, showGrid: !prev.showGrid }))}
+          className={`p-1 px-2.5 border rounded transition-all font-mono text-xs font-semibold flex items-center justify-center gap-1 cursor-pointer ${
+            gridSettings.showGrid
+              ? "bg-indigo-600 border-indigo-700 text-white hover:bg-indigo-700"
+              : "bg-slate-100 hover:bg-slate-200 border-slate-300 text-slate-800"
+          }`}
+          style={{ height: "26px" }}
+          title="Toggle Gridlines Visibility"
+          id="toggle-gridlines-btn"
+        >
+          <Grid className={`w-3.5 h-3.5 ${gridSettings.showGrid ? "text-white" : "text-indigo-600"}`} />
+          <span>GRID: {gridSettings.showGrid ? "ON" : "OFF"}</span>
+        </button>
+        <button
+          onClick={() => {
+            setIsMeasuring(!isMeasuring);
+            if (!isMeasuring) {
+              setMeasurePoint1(null);
+              setMeasurePoint2(null);
+            }
+          }}
+          className={`p-1 px-2.5 border rounded transition-all font-mono text-xs font-semibold flex items-center justify-center gap-1 cursor-pointer ${
+            isMeasuring
+              ? "bg-rose-600 border-rose-700 text-white hover:bg-rose-700"
+              : "bg-slate-100 hover:bg-slate-200 border-slate-300 text-slate-800"
+          }`}
+          style={{ height: "26px" }}
+          title="Measure shortest straight line / component distance between 2 points"
+          id="measure-btn"
+        >
+          <Ruler className={`w-3.5 h-3.5 ${isMeasuring ? "text-white" : "text-rose-600"}`} />
+          <span>MEASURE: {isMeasuring ? "ON" : "OFF"}</span>
+        </button>
       </div>
 
       {/* Top right Legend panel with pinned live cursor coordinate display */}
@@ -382,9 +572,9 @@ export default function InteractiveGrid({
           <span className="text-indigo-400 font-bold uppercase tracking-wider text-[8px]">Live Cursor:</span>
           {hoveredGridCoords ? (
             <>
-              <span>X: {hoveredGridCoords.x.toFixed(2)}</span>
+              <span>X: {hoveredGridCoords.x.toFixed(3)}</span>
               <span className="text-slate-500">|</span>
-              <span>Y: {hoveredGridCoords.y.toFixed(2)}</span>
+              <span>Y: {hoveredGridCoords.y.toFixed(3)}</span>
             </>
           ) : (
             <span className="text-slate-400 italic">Grid: Hover to track</span>
@@ -436,7 +626,7 @@ export default function InteractiveGrid({
             markerHeight="5"
             orient="auto-start-reverse"
           >
-            <path d="M 0 2 L 8 5 L 0 8 z" fill="#809fff" />
+            <path d="M 0 2 L 8 5 L 0 8 z" fill="#1f4b6e" />
           </marker>
         </defs>
 
@@ -480,7 +670,7 @@ export default function InteractiveGrid({
                     <circle
                       cx={x}
                       cy={y}
-                      r={7.5}
+                      r={3.75}
                       fill="none"
                       stroke="#d946ef"
                       strokeWidth={1.25}
@@ -491,7 +681,7 @@ export default function InteractiveGrid({
                   <circle
                     cx={x}
                     cy={y}
-                    r={isStart || isEnd ? 4.5 : 2.5}
+                    r={isStart || isEnd ? 2.25 : 1.25}
                     fill={isStart ? "#10b981" : isEnd ? "#ef4444" : "#d946ef"}
                     stroke="#ffffff"
                     strokeWidth={1}
@@ -515,7 +705,7 @@ export default function InteractiveGrid({
           </g>
         )}
 
-        {/* Toolpath lines in bright #809fff color */}
+        {/* Toolpath lines in custom dark `#1f4b6e` color */}
         <g id="toolpath-lines-layer">
           {pathElements.map((line) => {
             const isSelected = selectedPointId && (line.ptA.id === selectedPointId || line.ptB.id === selectedPointId);
@@ -524,14 +714,14 @@ export default function InteractiveGrid({
                 key={line.id}
                 d={line.d}
                 fill="none"
-                stroke={isSelected ? "#f59e0b" : "#809fff"}
-                strokeWidth={isSelected ? 4.5 : 2.75}
+                stroke={isSelected ? "#f59e0b" : "#1f4b6e"}
+                strokeWidth={isSelected ? 2.5 : 1.5}
                 markerEnd={
                   gridSettings.showArrows
                     ? `url(#g1-arrow)`
                     : undefined
                 }
-                className="hover:stroke-[#3b82f6] hover:stroke-[3.5px] cursor-crosshair transition-[stroke,stroke-width] duration-150"
+                className="hover:stroke-[#3b82f6] hover:stroke-[2.2px] cursor-crosshair transition-[stroke,stroke-width] duration-150"
                 title={`${line.type} Step: Feed Speed ${line.speed}`}
               />
             );
@@ -553,12 +743,16 @@ export default function InteractiveGrid({
                     cy={y}
                     r={isSelected ? 11 : 8}
                     fill="transparent"
-                    className="point-handle cursor-move hover:fill-indigo-500/10 transition-[fill] duration-150"
+                    className={`point-handle hover:fill-indigo-500/10 transition-[fill] duration-150 ${isMeasuring ? "cursor-crosshair" : "cursor-move"}`}
                     onMouseDown={(e) => {
                       e.stopPropagation();
-                      onSelectPoint(pt.id);
-                      setDraggingPointId(pt.id);
-                      if (onDragStart) onDragStart();
+                      if (isMeasuring) {
+                        handleMeasureSelect(pt);
+                      } else {
+                        onSelectPoint(pt.id);
+                        setDraggingPointId(pt.id);
+                        if (onDragStart) onDragStart();
+                      }
                     }}
                     onMouseEnter={() => setHoveredPoint(pt)}
                     onMouseLeave={() => setHoveredPoint(null)}
@@ -568,7 +762,7 @@ export default function InteractiveGrid({
                   <circle
                     cx={x}
                     cy={y}
-                    r={isSelected ? 6.5 : 4.5}
+                    r={isSelected ? 3.25 : 2.25}
                     fill={
                       isSelected
                         ? "#ea580c" // Selected Orange
@@ -579,7 +773,7 @@ export default function InteractiveGrid({
                         : "#2563eb" // Intermediate node color of Z segment (Royal Blue)
                     }
                     stroke={isSelected ? "#ffffff" : "rgba(0, 0, 0, 0.25)"}
-                    strokeWidth={isSelected ? 2 : 1}
+                    strokeWidth={isSelected ? 1.5 : 0.75}
                     className="pointer-events-none"
                   />
 
@@ -624,7 +818,389 @@ export default function InteractiveGrid({
             })}
           </g>
         )}
+
+        {/* Measurement Layer overlay */}
+        {isMeasuring && (
+          <g id="measurement-layer" className="pointer-events-none">
+            {/* Draw highlights around selected measure nodes */}
+            {measurePoint1 && (() => {
+              const p = project(measurePoint1.x, measurePoint1.y);
+              return (
+                <circle
+                  cx={p.x}
+                  cy={p.y}
+                  r={8}
+                  fill="none"
+                  stroke="#ec4899"
+                  strokeWidth={2.5}
+                  className="animate-pulse"
+                />
+              );
+            })()}
+            {measurePoint2 && (() => {
+              const p = project(measurePoint2.x, measurePoint2.y);
+              return (
+                <circle
+                  cx={p.x}
+                  cy={p.y}
+                  r={8}
+                  fill="none"
+                  stroke="#db2777"
+                  strokeWidth={2.5}
+                  className="animate-pulse"
+                />
+              );
+            })()}
+
+            {/* If both points are selected, construct the ruler visualizer */}
+            {measurePoint1 && measurePoint2 && (() => {
+              const p1 = project(measurePoint1.x, measurePoint1.y);
+              const p2 = project(measurePoint2.x, measurePoint2.y);
+              
+              // Determine corner for right angle
+              const pCorner = project(measurePoint2.x, measurePoint1.y);
+
+              // Distances
+              const dx = measurePoint2.x - measurePoint1.x;
+              const dy = measurePoint2.y - measurePoint1.y;
+              const dz = measurePoint2.z - measurePoint1.z;
+              const directDist2D = Math.sqrt(dx * dx + dy * dy);
+              const directDist3D = Math.sqrt(dx * dx + dy * dy + dz * dz);
+
+              return (
+                <g>
+                  {/* Direct connection diagonal (shortest straight path) */}
+                  <line
+                    x1={p1.x}
+                    y1={p1.y}
+                    x2={p2.x}
+                    y2={p2.y}
+                    stroke="#ec4899"
+                    strokeWidth={2}
+                    strokeDasharray="4 2"
+                  />
+
+                  {/* Horizontal Leg component */}
+                  <line
+                    x1={p1.x}
+                    y1={p1.y}
+                    x2={pCorner.x}
+                    y2={pCorner.y}
+                    stroke="#8b5cf6"
+                    strokeWidth={1.5}
+                    strokeDasharray="3 3"
+                    opacity={0.85}
+                  />
+
+                  {/* Vertical Leg component */}
+                  <line
+                    x1={pCorner.x}
+                    y1={pCorner.y}
+                    x2={p2.x}
+                    y2={p2.y}
+                    stroke="#06b6d4"
+                    strokeWidth={1.5}
+                    strokeDasharray="3 3"
+                    opacity={0.85}
+                  />
+
+                  {/* Nodes on corner to anchor the components visually */}
+                  <circle cx={pCorner.x} cy={pCorner.y} r={3} fill="#a78bfa" stroke="#ffffff" strokeWidth={1} />
+
+                  {/* Label for Direct distance (Shortest Straight Path) */}
+                  <g transform={`translate(${(p1.x + p2.x) / 2}, ${(p1.y + p2.y) / 2 - 12})`}>
+                    <rect
+                      x={-50}
+                      y={-9}
+                      width={100}
+                      height={16}
+                      rx={3}
+                      fill="rgba(236, 72, 153, 0.95)"
+                      stroke="#ffffff"
+                      strokeWidth={1}
+                    />
+                    <text
+                      fill="#ffffff"
+                      fontSize="8"
+                      fontWeight="bold"
+                      fontFamily="monospace"
+                      textAnchor="middle"
+                      y={2}
+                    >
+                      D: {directDist3D.toFixed(3)} mm
+                    </text>
+                  </g>
+
+                  {/* Label for horizontal offset ΔX */}
+                  {Math.abs(dx) > 0.01 && (
+                    <g transform={`translate(${(p1.x + pCorner.x) / 2}, ${(p1.y + pCorner.y) / 2 + 12})`}>
+                      <rect
+                        x={-42}
+                        y={-8}
+                        width={84}
+                        height={14}
+                        rx={3}
+                        fill="rgba(139, 92, 246, 0.95)"
+                        stroke="#ffffff"
+                        strokeWidth={0.75}
+                      />
+                      <text
+                        fill="#ffffff"
+                        fontSize="8"
+                        fontWeight="bold"
+                        fontFamily="monospace"
+                        textAnchor="middle"
+                        y={2}
+                      >
+                        ΔX: {Math.abs(dx).toFixed(3)} mm
+                      </text>
+                    </g>
+                  )}
+
+                  {/* Label for vertical offset ΔY */}
+                  {Math.abs(dy) > 0.01 && (
+                    <g transform={`translate(${(pCorner.x + p2.x) / 2 + (p2.x > pCorner.x ? 45 : -45)}, ${(pCorner.y + p2.y) / 2})`}>
+                      <rect
+                        x={-42}
+                        y={-8}
+                        width={84}
+                        height={14}
+                        rx={3}
+                        fill="rgba(6, 182, 212, 0.95)"
+                        stroke="#ffffff"
+                        strokeWidth={0.75}
+                      />
+                      <text
+                        fill="#ffffff"
+                        fontSize="8"
+                        fontWeight="bold"
+                        fontFamily="monospace"
+                        textAnchor="middle"
+                        y={2}
+                      >
+                        ΔY: {Math.abs(dy).toFixed(3)} mm
+                      </text>
+                    </g>
+                  )}
+                </g>
+              );
+            })()}
+          </g>
+        )}
       </svg>
+
+      {/* Measuring Tool HUD panel */}
+      {isMeasuring && (
+        <div 
+          className="absolute bottom-4 left-[200px] z-30 text-[10px] font-mono bg-white/95 text-slate-800 p-3.5 rounded border border-rose-300 shadow-xl space-y-2 w-[240px] transition-all animate-fadeIn pointer-events-auto"
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="font-bold text-rose-600 border-b border-rose-200 pb-1.5 flex justify-between items-center">
+            <div className="flex items-center gap-1">
+              <Ruler className="w-3.5 h-3.5" />
+              <span>MEASUREMENT SENSOR</span>
+            </div>
+            <button 
+              onClick={() => {
+                setIsMeasuring(false);
+                setMeasurePoint1(null);
+                setMeasurePoint2(null);
+              }}
+              className="px-1.5 py-0.5 bg-slate-100 hover:bg-slate-200 text-slate-500 rounded text-[9px] font-semibold cursor-pointer border border-slate-200"
+            >
+              EXIT
+            </button>
+          </div>
+
+          <div className="space-y-1.5 text-slate-600">
+            {/* Pt 1 Info */}
+            <div className="flex flex-col border-b border-slate-100 pb-1">
+              <span className="font-semibold text-rose-500 text-[8px] uppercase tracking-wider">POINT 1 (A):</span>
+              {measurePoint1 ? (
+                <span className="text-slate-800 font-medium">
+                  X: {measurePoint1.x.toFixed(3)} • Y: {measurePoint1.y.toFixed(3)} • Z: {measurePoint1.z.toFixed(2)}
+                </span>
+              ) : (
+                <span className="text-slate-400 italic">Select node from toolpaths...</span>
+              )}
+            </div>
+
+            {/* Pt 2 Info */}
+            <div className="flex flex-col border-b border-slate-100 pb-1">
+              <span className="font-semibold text-rose-500 text-[8px] uppercase tracking-wider">POINT 2 (B):</span>
+              {measurePoint2 ? (
+                <span className="text-slate-800 font-medium">
+                  X: {measurePoint2.x.toFixed(3)} • Y: {measurePoint2.y.toFixed(3)} • Z: {measurePoint2.z.toFixed(2)}
+                </span>
+              ) : (
+                <span className="text-slate-400 italic">Select second node...</span>
+              )}
+            </div>
+
+            {/* Calculations results */}
+            {measurePoint1 && measurePoint2 ? (() => {
+              const dx = measurePoint2.x - measurePoint1.x;
+              const dy = measurePoint2.y - measurePoint1.y;
+              const dz = measurePoint2.z - measurePoint1.z;
+              const dist2D = Math.sqrt(dx*dx + dy*dy);
+              const dist3D = Math.sqrt(dx*dx + dy*dy + dz*dz);
+              const sumXY = Math.abs(dx) + Math.abs(dy);
+
+              return (
+                <div className="space-y-1.5 pt-1 text-slate-800">
+                  <div className="flex justify-between font-bold text-rose-700 bg-rose-50/50 p-1 px-1.5 rounded border border-rose-100 mt-1">
+                    <span>STRAIGHT LINE 3D:</span>
+                    <span>{dist3D.toFixed(3)} mm</span>
+                  </div>
+                  <div className="flex justify-between font-semibold text-indigo-700 bg-indigo-50/30 p-1 px-1.5 rounded border border-indigo-100/50">
+                    <span>STRAIGHT LINE 2D:</span>
+                    <span>{dist2D.toFixed(3)} mm</span>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-1.5 pt-1 text-[9px]">
+                    <div className="flex flex-col bg-slate-50 p-1 rounded border border-slate-100">
+                      <span className="text-slate-400 font-semibold uppercase">DX (Horizontal)</span>
+                      <span className="font-bold text-slate-700">{Math.abs(dx).toFixed(3)} mm</span>
+                    </div>
+                    <div className="flex flex-col bg-slate-50 p-1 rounded border border-slate-100">
+                      <span className="text-slate-400 font-semibold uppercase">DY (Vertical)</span>
+                      <span className="font-bold text-slate-700">{Math.abs(dy).toFixed(3)} mm</span>
+                    </div>
+                  </div>
+
+                  <div className="flex justify-between text-[9px] text-slate-500 font-medium pt-0.5 px-0.5">
+                    <span>ABS DX + DY SUM:</span>
+                    <span className="font-bold text-slate-700">{sumXY.toFixed(3)} mm</span>
+                  </div>
+
+                  <div className="flex justify-between text-[9px] text-slate-500 font-medium px-0.5">
+                    <span>DZ OFFSET:</span>
+                    <span className="font-bold text-slate-700">{Math.abs(dz).toFixed(3)} mm</span>
+                  </div>
+                </div>
+              );
+            })() : null}
+          </div>
+
+          {(measurePoint1 || measurePoint2) && (
+            <button
+              onClick={() => {
+                setMeasurePoint1(null);
+                setMeasurePoint2(null);
+              }}
+              className="w-full py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold rounded text-[9.5px] border border-slate-300 transition-all cursor-pointer text-center"
+            >
+              CLEAR SELECTION
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Dynamic X-Y Axis Orientation HUD Reference */}
+      <div 
+        className="absolute bottom-4 right-4 z-30 bg-white/95 backdrop-blur-md px-3.5 py-2.5 rounded-md border border-slate-300 shadow-lg flex flex-col items-center gap-1.5 pointer-events-none select-none w-28"
+        id="axis-orientation-indicator"
+      >
+        <div className="font-mono text-[8.5px] font-bold text-indigo-700 tracking-wider uppercase">
+          ORIENTATION
+        </div>
+        
+        {/* Compact visual axis compass */}
+        <div className="relative w-12 h-12 bg-slate-50 border border-slate-200/60 rounded flex items-center justify-center">
+          <svg width="40" height="40" viewBox="0 0 40 40" className="overflow-visible">
+            {/* Origin node center */}
+            <circle cx="10" cy="30" r="2.5" fill="#6366f1" />
+            
+            {/* Horizontal Axis arrow direction */}
+            <line x1="10" y1="30" x2="28" y2="30" stroke="#475569" strokeWidth="1.75" strokeLinecap="round" />
+            <polygon points="28,27.5 33,30 28,32.5" fill="#475569" />
+            
+            {/* Vertical Axis arrow direction */}
+            <line x1="10" y1="30" x2="10" y2="12" stroke="#475569" strokeWidth="1.75" strokeLinecap="round" />
+            <polygon points="7.5,12 10,7 12.5,12" fill="#475569" />
+            
+            {/* Horizontal Axis label (swaps if axis is swapped) */}
+            <text 
+              x="34" 
+              y="38" 
+              fill="#4f46e5" 
+              fontSize="8" 
+              fontWeight="bold" 
+              fontFamily="monospace" 
+              textAnchor="middle"
+            >
+              {swapXY ? "Y" : "X"}
+            </text>
+
+            {/* Vertical Axis label (swaps if axis is swapped) */}
+            <text 
+              x="18" 
+              y="9" 
+              fill="#2563eb" 
+              fontSize="8" 
+              fontWeight="bold" 
+              fontFamily="monospace" 
+              textAnchor="middle"
+            >
+              {swapXY ? "X" : "Y"}
+            </text>
+          </svg>
+        </div>
+        
+        <div className="font-mono text-[8px] text-slate-500 font-bold leading-none tracking-tight">
+          {swapXY ? "Y ➔ HORIZ" : "X ➔ HORIZ"}
+        </div>
+      </div>
+
+      {/* Manual Drag Resize Handles (Right edge, Bottom edge, Bottom-right corner) */}
+      <div
+        className="absolute top-0 right-0 w-1.5 h-full cursor-ew-resize z-50 hover:bg-slate-300/30 bg-transparent transition-colors group"
+        onMouseDown={(e) => {
+          e.stopPropagation();
+          e.preventDefault();
+          const w = containerRef.current?.clientWidth || 600;
+          const h = containerRef.current?.clientHeight || 600;
+          resizeStart.current = { x: e.clientX, y: e.clientY, w, h };
+          setIsResizing("width");
+        }}
+        title="Drag right edge to resize width"
+      >
+        <div className="w-[2px] h-full mx-auto bg-slate-400/0 group-hover:bg-indigo-500/50 transition-colors" />
+      </div>
+
+      <div
+        className="absolute bottom-0 left-0 h-1.5 w-full cursor-ns-resize z-50 hover:bg-slate-300/30 bg-transparent transition-colors group"
+        onMouseDown={(e) => {
+          e.stopPropagation();
+          e.preventDefault();
+          const w = containerRef.current?.clientWidth || 600;
+          const h = containerRef.current?.clientHeight || 600;
+          resizeStart.current = { x: e.clientX, y: e.clientY, w, h };
+          setIsResizing("height");
+        }}
+        title="Drag bottom edge to resize height"
+      >
+        <div className="h-[2px] w-full my-auto bg-slate-400/0 group-hover:bg-indigo-500/50 transition-colors" />
+      </div>
+
+      <div
+        className="absolute bottom-1 right-1 w-4 h-4 cursor-nwse-resize z-50 flex items-end justify-end p-0.5 hover:bg-slate-300/70 bg-white/40 border border-slate-300 rounded shadow-sm opacity-65 hover:opacity-100 transition-opacity"
+        onMouseDown={(e) => {
+          e.stopPropagation();
+          e.preventDefault();
+          const w = containerRef.current?.clientWidth || 600;
+          const h = containerRef.current?.clientHeight || 600;
+          resizeStart.current = { x: e.clientX, y: e.clientY, w, h };
+          setIsResizing("both");
+        }}
+        title="Drag corner to resize width and height"
+      >
+        <svg width="10" height="10" viewBox="0 0 10 10" className="text-slate-600 fill-none overflow-visible">
+          <line x1="8" y1="2" x2="2" y2="8" stroke="currentColor" strokeWidth="1" strokeLinecap="round" />
+          <line x1="8" y1="5" x2="5" y2="8" stroke="currentColor" strokeWidth="1" strokeLinecap="round" />
+        </svg>
+      </div>
 
     </div>
   );

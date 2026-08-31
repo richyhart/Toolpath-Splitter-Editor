@@ -27,14 +27,6 @@ body {
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
 }
 
-/* Elegant grid background - black color grid pattern as requested */
-.grid-bg {
-  background-image: linear-gradient(rgba(0, 0, 0, 0.06) 1px, transparent 1px),
-                    linear-gradient(90deg, rgba(0, 0, 0, 0.06) 1px, transparent 1px);
-  background-size: 40px 40px;
-  background-position: center center;
-}
-
 /* Elegant scrollbars for the new warm cream theme */
 ::-webkit-scrollbar {
   width: 6px;

@@ -5,7 +5,7 @@
 
 import React, { useRef, useState } from "react";
 import { Upload, Download, CheckCircle, HelpCircle, Undo2, Redo2 } from "lucide-react";
-import { parseToolpathCSV, exportToCSV } from "../utils";
+import { parseToolpathCSV, exportToCSV, exportToXLSX } from "../utils";
 import { ToolpathPoint } from "../types";
 
 interface ToolbarProps {
@@ -30,6 +30,7 @@ export default function Toolbar({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isDragActive, setIsDragActive] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
+  const [showExportDropdown, setShowExportDropdown] = useState(false);
 
   // Parse files
   const handleFileProcess = (file: File) => {
@@ -85,10 +86,31 @@ export default function Toolbar({
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.setAttribute("href", url);
-    link.setAttribute("download", fileName.replace(".csv", "") + "_edited.csv");
+    const baseName = fileName ? fileName.replace(/\.csv$/i, "") : "helix_spiral_sample";
+    link.setAttribute("download", `${baseName}_edited.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  const triggerDownloadXLSX = () => {
+    if (points.length === 0) return;
+    try {
+      const excelBuffer = exportToXLSX(points);
+      const blob = new Blob([excelBuffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.setAttribute("href", url);
+      const baseName = fileName ? fileName.replace(/\.csv$/i, "") : "helix_spiral_sample";
+      link.setAttribute("download", `${baseName}_edited.xlsx`);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      alert("Error generating Excel file: " + err);
+    }
   };
 
   return (
@@ -106,7 +128,7 @@ export default function Toolbar({
               <span>DISPENSE<span className="text-indigo-600 font-light">GRID</span></span>
             </h1>
             <p className="text-[10px] font-mono text-slate-500 uppercase tracking-widest mt-0.5">
-              Dispensing Toolpath Orchestrator & Slicer v4.2
+              Coordinate / Toolpath editor and viewer V1.0 by Richy Hart
             </p>
           </div>
         </div>
@@ -160,19 +182,68 @@ export default function Toolbar({
             <span>How it works</span>
           </button>
 
-          <button
-            onClick={triggerDownload}
-            disabled={points.length === 0}
-            className={`px-4.5 py-2 rounded text-xs font-bold flex items-center gap-1.5 transition-all shadow-sm border ${
-              points.length === 0
-                ? "bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed"
-                : "bg-indigo-600 hover:bg-indigo-500 text-white cursor-pointer border-indigo-600"
-            }`}
-            id="export-csv-btn"
-          >
-            <Download className="w-4 h-4" />
-            <span>Export CSV</span>
-          </button>
+          <div className="relative flex items-center shrink-0">
+            <button
+              onClick={triggerDownload}
+              disabled={points.length === 0}
+              className={`pl-4 pr-3 py-2 rounded-l text-xs font-bold flex items-center gap-1.5 transition-all shadow-sm border-y border-l ${
+                points.length === 0
+                  ? "bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed"
+                  : "bg-indigo-600 hover:bg-indigo-550 text-white cursor-pointer border-indigo-600"
+              }`}
+              id="export-csv-btn"
+              title="Export all coordinates as CSV"
+            >
+              <Download className="w-4 h-4" />
+              <span>Export CSV</span>
+            </button>
+            <button
+              onClick={() => points.length > 0 && setShowExportDropdown(!showExportDropdown)}
+              disabled={points.length === 0}
+              className={`px-2 py-2 rounded-r text-xs font-bold flex items-center transition-all shadow-sm border border-l-0 ${
+                points.length === 0
+                  ? "bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed border-l border-l-slate-200"
+                  : "bg-indigo-700 hover:bg-indigo-600 text-white cursor-pointer border-indigo-750"
+              }`}
+              id="export-dropdown-trigger-btn"
+              title="Select export format (.csv / .xlsx)"
+            >
+              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M19 9l-7 7-7-7" />
+              </svg>
+            </button>
+
+            {showExportDropdown && points.length > 0 && (
+              <>
+                <div 
+                  className="fixed inset-0 z-40 bg-transparent" 
+                  onClick={() => setShowExportDropdown(false)}
+                />
+                <div className="absolute right-0 top-full mt-1.5 w-48 bg-white border border-slate-200 rounded-lg shadow-xl z-50 py-1.5 animate-fadeIn font-sans">
+                  <div className="px-3 py-1 text-[9px] font-bold text-slate-400 uppercase tracking-widest select-none">
+                    Select Export Format
+                  </div>
+                  <button
+                    onClick={() => {
+                      triggerDownload();
+                      setShowExportDropdown(false);
+                    }}
+                    className="w-full text-left px-3 py-2 text-xs text-slate-700 hover:bg-indigo-50 hover:text-indigo-700 font-medium transition flex items-center gap-2 cursor-pointer"
+                  >
+                    <span className="w-2 h-2 rounded-full bg-indigo-500 inline-block"></span>
+                    <span>Dispense CSV (.csv)</span>
+                  </button>
+                  <button
+                    onClick={triggerDownloadXLSX}
+                    className="w-full text-left px-3 py-2 text-xs text-slate-700 hover:bg-emerald-50 hover:text-emerald-700 font-medium transition flex items-center gap-2 cursor-pointer"
+                  >
+                    <span className="w-2 h-2 rounded-full bg-emerald-500 inline-block"></span>
+                    <span>Excel Spreadsheet (.xlsx)</span>
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
         </div>
       </div>
 
@@ -222,7 +293,7 @@ export default function Toolbar({
             <span>⚙️ CALIBRATOR CONTROL PANEL INSTRUCTIONS</span>
           </p>
           <ul className="list-disc pl-5 space-y-1 font-sans text-slate-600">
-            <li><strong>Dispensing CMD Types:</strong> Column A defines our three custom status types: <code>Start of line dispense</code>, <code>Line passing</code>, and <code>End of line dispense</code>.</li>
+            <li><strong>Dispensing CMD Types:</strong> Column A defines our three custom status types: <code>Start of Line Dispense</code>, <code>Line Passing</code>, and <code>End of Line Dispense</code>.</li>
             <li><strong>Automatic Z Slices:</strong> The system sequentializer clusters coordinates into segments grouped by Z height values. Changes in Z levels automatically fork consecutive stages.</li>
             <li><strong>Drag to Edit:</strong> Simply select any point on the grid, then click and drag the interactive handles to visually live-tune tool coordinates. Changes reflect instantly in both coordinates and CSV rows!</li>
             <li><strong>Full Modifiers:</strong> Use the lower-left modifiers to mass offset linear tracks or scale whole layers safely.</li>

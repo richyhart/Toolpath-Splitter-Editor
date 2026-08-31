@@ -4,6 +4,7 @@
  */
 
 import { ToolpathPoint, ToolpathSegment } from "./types";
+import * as XLSX from "xlsx";
 
 /**
  * Generate a unique ID
@@ -38,28 +39,7 @@ export function parseToolpathCSV(csvContent: string): ToolpathPoint[] {
 
     if (columns.length < 3) continue; // Need at least type, X, Y details
 
-    let rawType = columns[0] || "Line passing";
-    let type = "Line passing";
-
-    // Gracefully map conventional G-code or arbitrary types to the requested three CMD types
-    const lowerType = rawType.toLowerCase().trim();
-    if (lowerType === "start of line dispense") {
-      type = "Start of line dispense";
-    } else if (lowerType === "end of line dispense") {
-      type = "End of line dispense";
-    } else if (lowerType === "line passing") {
-      type = "Line passing";
-    } else if (lowerType === "g0" || lowerType === "rapid") {
-      type = "Start of line dispense";
-    } else if (lowerType === "g1" || lowerType === "feed") {
-      type = "Line passing";
-    } else if (lowerType.includes("start")) {
-      type = "Start of line dispense";
-    } else if (lowerType.includes("end")) {
-      type = "End of line dispense";
-    } else {
-      type = "Line passing";
-    }
+    const type = columns[0] || "Line Passing";
 
     const x = parseFloat(columns[1]);
     const y = parseFloat(columns[2]);
@@ -99,6 +79,35 @@ export function exportToCSV(points: ToolpathPoint[]): string {
     return `${p.type},${xStr},${yStr},${zStr},${speedStr}`;
   });
   return header + rows.join("\n");
+}
+
+/**
+ * Export edited toolpath points back to a styled Excel (.xlsx) sheet representation.
+ */
+export function exportToXLSX(points: ToolpathPoint[]): ArrayBuffer {
+  const rows = points.map(p => ({
+    "Movement": p.type,
+    "X (mm)": parseFloat(p.x.toFixed(4)),
+    "Y (mm)": parseFloat(p.y.toFixed(4)),
+    "Z (mm)": parseFloat(p.z.toFixed(4)),
+    "Speed (mm/s)": parseFloat(p.speed.toFixed(1))
+  }));
+
+  const worksheet = XLSX.utils.json_to_sheet(rows);
+
+  // Set explicit column widths for neat spacing
+  worksheet["!cols"] = [
+    { wch: 24 }, // Movement type
+    { wch: 12 }, // X (mm)
+    { wch: 12 }, // Y (mm)
+    { wch: 12 }, // Z (mm)
+    { wch: 12 }  // Speed (mm/s)
+  ];
+
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, worksheet, "DispenseToolpath");
+
+  return XLSX.write(workbook, { bookType: "xlsx", type: "array" });
 }
 
 /**
@@ -189,7 +198,7 @@ export function generateSampleSpiral(): ToolpathPoint[] {
     points.push({
       id: generateId(),
       originalIndex: originalIndex++,
-      type: "Start of line dispense",
+      type: "Start of Line Dispense",
       x: center.x,
       y: center.y,
       z: z,
@@ -204,11 +213,11 @@ export function generateSampleSpiral(): ToolpathPoint[] {
         const x = center.x + Math.cos(theta) * r;
         const y = center.y + Math.sin(theta) * r;
         
-        let pointType = "Line passing";
+        let pointType = "Line Passing";
         if (s === numSteps) {
-          pointType = "End of line dispense";
+          pointType = "End of Line Dispense";
         } else if (s === 0) {
-          pointType = "Start of line dispense";
+          pointType = "Start of Line Dispense";
         }
 
         points.push({
@@ -238,7 +247,7 @@ export function generateSampleCalibrationCube(): ToolpathPoint[] {
     points.push({
       id: generateId(),
       originalIndex: originalIndex++,
-      type: "Start of line dispense",
+      type: "Start of Line Dispense",
       x: 20,
       y: 20,
       z,
@@ -247,10 +256,10 @@ export function generateSampleCalibrationCube(): ToolpathPoint[] {
 
     // Square travel
     const perimeter = [
-      { x: 80, y: 20, type: "Line passing" },
-      { x: 80, y: 80, type: "Line passing" },
-      { x: 20, y: 80, type: "Line passing" },
-      { x: 20, y: 20, type: "End of line dispense" }
+      { x: 80, y: 20, type: "Line Passing" },
+      { x: 80, y: 80, type: "Line Passing" },
+      { x: 20, y: 80, type: "Line Passing" },
+      { x: 20, y: 20, type: "End of Line Dispense" }
     ];
 
     for (const node of perimeter) {
@@ -269,7 +278,7 @@ export function generateSampleCalibrationCube(): ToolpathPoint[] {
     points.push({
       id: generateId(),
       originalIndex: originalIndex++,
-      type: "Start of line dispense",
+      type: "Start of Line Dispense",
       x: 35,
       y: 35,
       z,
@@ -278,7 +287,7 @@ export function generateSampleCalibrationCube(): ToolpathPoint[] {
     points.push({
       id: generateId(),
       originalIndex: originalIndex++,
-      type: "End of line dispense",
+      type: "End of Line Dispense",
       x: 65,
       y: 65,
       z,
@@ -307,11 +316,11 @@ export function generateSampleStar(): ToolpathPoint[] {
       const x = center.x + radius * Math.cos(angle);
       const y = center.y + radius * Math.sin(angle);
 
-      let pointType = "Line passing";
+      let pointType = "Line Passing";
       if (i === 0) {
-        pointType = "Start of line dispense";
+        pointType = "Start of Line Dispense";
       } else if (i === numPoints * 2) {
-        pointType = "End of line dispense";
+        pointType = "End of Line Dispense";
       }
 
       points.push({

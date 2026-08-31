@@ -3,9 +3,10 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { ToolpathSegment } from "../types";
-import { Layers, Edit3, Check, Scale, Ghost } from "lucide-react";
+import { Layers, Edit3, Check, Scale, Ghost, Download, Plus, Trash2 } from "lucide-react";
+import { exportToCSV, exportToXLSX } from "../utils";
 
 interface SegmentSidebarProps {
   segments: ToolpathSegment[];
@@ -14,6 +15,9 @@ interface SegmentSidebarProps {
   onUpdateSegmentZ: (segmentId: string, newZ: number) => void;
   onionSkinSegmentId: string | null;
   onToggleOnionSkin: (id: string | null) => void;
+  fileName?: string;
+  onAddEmptySegment?: (zValue: number) => void;
+  onDeleteSegments?: (ids: string[]) => void;
 }
 
 export default function SegmentSidebar({
@@ -22,10 +26,118 @@ export default function SegmentSidebar({
   onSelectSegment,
   onUpdateSegmentZ,
   onionSkinSegmentId,
-  onToggleOnionSkin
+  onToggleOnionSkin,
+  fileName,
+  onAddEmptySegment,
+  onDeleteSegments
 }: SegmentSidebarProps) {
   const [editingZId, setEditingZId] = useState<string | null>(null);
   const [tempZValue, setTempZValue] = useState<string>("");
+  const [newZInput, setNewZInput] = useState<string>("1.000");
+  const [withSegmentExportDropdown, setWithSegmentExportDropdown] = useState(false);
+
+  const [deleteConfirmation, setDeleteConfirmation] = useState<{
+    ids: string[];
+    title: string;
+    description: string;
+  } | null>(null);
+
+  // Update default new Z value when segments content changes
+  useEffect(() => {
+    if (segments.length > 0) {
+      const realSegments = segments.filter(s => !s.id.startsWith("empty-segment-"));
+      const referenceSegments = realSegments.length > 0 ? realSegments : segments;
+      const maxZ = Math.max(...referenceSegments.map((s) => s.zValue));
+      setNewZInput((maxZ + 1.0).toFixed(3));
+    } else {
+      setNewZInput("1.000");
+    }
+  }, [segments.length]);
+
+  // Track checked segments for CSV export
+  const [checkedSegmentIds, setCheckedSegmentIds] = useState<Set<string>>(new Set());
+
+  // Automatically select all segment checkboxes on segments length/data refresh
+  useEffect(() => {
+    if (segments && segments.length > 0) {
+      setCheckedSegmentIds(new Set(segments.map((s) => s.id)));
+    } else {
+      setCheckedSegmentIds(new Set());
+    }
+  }, [segments]);
+
+  // Toggle individual layer checkbox
+  const handleToggleCheck = (segmentId: string) => {
+    setCheckedSegmentIds((prev) => {
+      const updated = new Set(prev);
+      if (updated.has(segmentId)) {
+        updated.delete(segmentId);
+      } else {
+        updated.add(segmentId);
+      }
+      return updated;
+    });
+  };
+
+  // Toggle all checkboxes
+  const handleToggleAll = () => {
+    if (checkedSegmentIds.size === segments.length) {
+      setCheckedSegmentIds(new Set());
+    } else {
+      setCheckedSegmentIds(new Set(segments.map((s) => s.id)));
+    }
+  };
+
+  // Export checked segments to CSV format
+  const handleExportSelectedCSV = () => {
+    const selectedPoints = segments
+      .filter((seg) => checkedSegmentIds.has(seg.id))
+      .flatMap((seg) => seg.points);
+
+    if (selectedPoints.length === 0) return;
+
+    const csvContent = exportToCSV(selectedPoints);
+    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    
+    const link = document.createElement("a");
+    link.setAttribute("href", url);
+    
+    const baseName = fileName ? fileName.replace(/\.csv$/i, "") : "helix_spiral_sample";
+    link.setAttribute("download", `${baseName}_selected_layers.csv`);
+    
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  const handleExportSelectedXLSX = () => {
+    const selectedPoints = segments
+      .filter((seg) => checkedSegmentIds.has(seg.id))
+      .flatMap((seg) => seg.points);
+
+    if (selectedPoints.length === 0) return;
+
+    try {
+      const excelBuffer = exportToXLSX(selectedPoints);
+      const blob = new Blob([excelBuffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+      const url = URL.createObjectURL(blob);
+      
+      const link = document.createElement("a");
+      link.setAttribute("href", url);
+      
+      const baseName = fileName ? fileName.replace(/\.csv$/i, "") : "helix_spiral_sample";
+      link.setAttribute("download", `${baseName}_selected_layers.xlsx`);
+      
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      alert("Error generating Excel file: " + err);
+    }
+  };
 
   // Calculate Euclidean total length of path movements inside a segment
   const calculateSegmentStats = (seg: ToolpathSegment) => {
@@ -68,6 +180,38 @@ export default function SegmentSidebar({
     setEditingZId(null);
   };
 
+  const handleDeleteIndividualClick = (segmentId: string, segmentNum: number) => {
+    setDeleteConfirmation({
+      ids: [segmentId],
+      title: "Delete Segment",
+      description: `Are you sure you want to delete Segment #${segmentNum}? All coordinate points belonging to this Z axis level will be permanently deleted.`
+    });
+  };
+
+  const handleDeleteBatchClick = () => {
+    const selectedIds = Array.from(checkedSegmentIds);
+    if (selectedIds.length === 0) return;
+    setDeleteConfirmation({
+      ids: selectedIds,
+      title: "Delete Selected Segments",
+      description: `Are you sure you want to delete the ${selectedIds.length} selected Z-axis segments? All coordinate points belonging to these layers will be permanently deleted.`
+    });
+  };
+
+  const confirmDeleteAction = () => {
+    if (!deleteConfirmation) return;
+    if (onDeleteSegments) {
+      onDeleteSegments(deleteConfirmation.ids);
+      // Remove deleted IDs from checked list
+      setCheckedSegmentIds((prev) => {
+        const next = new Set(prev);
+        deleteConfirmation.ids.forEach((id) => next.delete(id));
+        return next;
+      });
+    }
+    setDeleteConfirmation(null);
+  };
+
   return (
     <div className="w-full bg-white border border-slate-300 rounded-lg overflow-hidden shadow-lg flex flex-col h-[320px] lg:h-[620px]">
       {/* Sidebar Header */}
@@ -81,8 +225,48 @@ export default function SegmentSidebar({
         </span>
       </div>
 
-      {/* Layer List */}
-      <div className="p-3 overflow-y-auto divide-y divide-slate-100 flex-1 space-y-2.5 bg-slate-50/50">
+      {/* Add Empty Segment Form */}
+      {onAddEmptySegment && (
+        <div className="flex items-center gap-2 bg-slate-50 border-b border-slate-200 px-3.5 py-2.5">
+          <span className="text-[9px] font-mono font-bold text-slate-500 uppercase flex-shrink-0">Height:</span>
+          <div className="relative flex-1 flex gap-1.5 items-center">
+            <span className="absolute left-2.5 text-slate-400 font-mono text-[10px] font-bold">Z</span>
+            <input
+              type="number"
+              step="0.1"
+              value={newZInput}
+              onChange={(e) => setNewZInput(e.target.value)}
+              placeholder="0.000"
+              className="w-20 pl-6 pr-1.5 py-1 text-[10px] h-7 font-mono border border-slate-300 rounded bg-white text-slate-800 focus:outline-none focus:border-indigo-500"
+              id="new-segment-z-input"
+            />
+            <button
+              onClick={() => {
+                const z = parseFloat(newZInput);
+                if (!isNaN(z)) {
+                  onAddEmptySegment(z);
+                }
+              }}
+              className="flex-1 py-1 px-2.5 h-7 bg-indigo-600 hover:bg-indigo-700 text-white font-mono text-[9px] font-bold uppercase rounded border border-indigo-700 hover:shadow-sm transition select-none flex-shrink-0 cursor-pointer flex items-center justify-center gap-1.5 leading-none"
+              id="add-empty-segment-btn"
+              title="Add a new empty Z-axis segment"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span>Add Layer</span>
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Layer List Container - Styled precisely to apply beautiful user focus adjustments */}
+      <div 
+        className="p-3.5 overflow-y-auto flex-1 space-y-3 bg-slate-100/40 border-y border-slate-200/80 shadow-inner"
+        id="layer-list-scroll-view"
+        style={{
+          scrollbarWidth: "thin",
+          scrollbarColor: "#cbd5e1 transparent",
+        }}
+      >
         {segments.length === 0 ? (
           <div className="text-center py-10 text-slate-400 font-mono text-xs">
             NO LAYER SEGMENTS DETECTED.<br />UPLOAD FILE TO SLICE.
@@ -91,108 +275,164 @@ export default function SegmentSidebar({
           segments.map((seg, idx) => {
             const isSelected = seg.id === selectedSegmentId;
             const isOnionSkin = seg.id === onionSkinSegmentId;
+            const isChecked = checkedSegmentIds.has(seg.id);
+            const isEmpty = seg.points.length === 0;
             const { travel, bounds } = calculateSegmentStats(seg);
 
             return (
               <div
                 key={seg.id}
                 onClick={() => onSelectSegment(seg.id)}
-                className={`p-3 rounded transition-all cursor-pointer border ${
+                className={`p-3 rounded-lg transition-all cursor-pointer border flex items-start gap-3 select-none ${
                   isSelected
-                    ? "bg-indigo-50/90 border-indigo-200 text-indigo-900 shadow-sm"
-                    : "border-transparent bg-white hover:bg-slate-50 text-slate-600 hover:text-slate-800"
+                    ? "bg-indigo-50/85 border-indigo-200 text-indigo-900 shadow-md ring-1 ring-indigo-200/50"
+                    : isEmpty
+                    ? "bg-purple-50/30 border-purple-200/95 hover:border-purple-350 hover:bg-purple-50/70 text-slate-505 shadow-sm"
+                    : isChecked
+                    ? "bg-white border-slate-200 hover:border-indigo-200 text-slate-600 hover:text-slate-800 shadow-sm"
+                    : "border-slate-200/40 bg-slate-50 text-slate-400 opacity-60 hover:opacity-90"
                 }`}
                 id={`segment-row-${seg.id}`}
               >
-                {/* Segment Title and Color Node Indicator */}
-                <div className="flex items-center justify-between mb-2">
-                  <div className="flex items-center gap-2.5">
-                    {/* Vertical Segment highlight bar matching instructions */}
-                    <div className={`w-1 h-8 rounded-full ${isSelected ? "bg-indigo-600" : "bg-slate-200"}`}></div>
-                    <div>
-                      <p className={`text-xs font-bold ${isSelected ? "text-indigo-900" : "text-slate-700"}`}>
-                        Segment #{idx + 1}
-                      </p>
-                      <p className="text-[10px] font-mono text-slate-400 pt-0.5">
-                        Points: {seg.points.length}
-                      </p>
-                    </div>
-                  </div>
-
-                  {/* Actions area with Onion skin overlay toggle & Z coordinate modifier */}
-                  <div className="flex items-center gap-2">
-                    {/* Onion Skin button */}
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onToggleOnionSkin(seg.id);
-                      }}
-                      className={`px-2 py-0.5 rounded border text-[9px] font-mono font-bold flex items-center gap-1 transition-all ${
-                        isOnionSkin
-                          ? "bg-fuchsia-50 hover:bg-fuchsia-100 border-fuchsia-300 text-fuchsia-700 shadow-sm"
-                          : "bg-slate-50 hover:bg-slate-100 border-slate-200 text-slate-400 hover:text-slate-600"
-                      }`}
-                      title={isOnionSkin ? "Turn off Onion Skin Overlay" : "Overlay this segment in fuchsia behind working segment"}
-                    >
-                      <Ghost className={`w-3 h-3 ${isOnionSkin ? "stroke-fuchsia-600 animate-pulse" : "stroke-slate-400"}`} />
-                      <span>{isOnionSkin ? "OVERLAY" : "SKIN"}</span>
-                    </button>
-
-                    {/* Z Coordinate Modifier */}
-                    <div className="flex items-center gap-1.5 text-[11px]">
-                      {editingZId === seg.id ? (
-                        <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
-                          <span className="text-slate-500 font-mono text-[10px]">&Delta;Z:</span>
-                          <input
-                            type="number"
-                            step="0.05"
-                            value={tempZValue}
-                            onChange={(e) => setTempZValue(e.target.value)}
-                            onKeyDown={(e) => {
-                              if (e.key === "Enter") saveEditingZ(seg.id);
-                            }}
-                            className="w-14 px-1.5 py-0.5 border border-indigo-400 rounded bg-white text-slate-800 font-mono text-[11px] text-right focus:outline-none"
-                            autoFocus
-                          />
-                          <button
-                            onClick={() => saveEditingZ(seg.id)}
-                            className="p-1 text-emerald-600 hover:bg-slate-100 rounded"
-                          >
-                            <Check className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
-                      ) : (
-                        <div className="flex items-center gap-1 font-mono">
-                          <span className="text-[10px] text-slate-400">Z:</span>
-                          <strong className={`px-1.5 py-0.5 rounded font-mono text-[10.5px] font-bold ${isSelected ? "text-indigo-700 bg-indigo-100/60" : "text-slate-700 bg-slate-100"}`}>
-                            {seg.zValue.toFixed(4)}
-                          </strong>
-                          <button
-                            onClick={(e) => startEditingZ(e, seg)}
-                            className={`p-1 rounded opacity-60 hover:opacity-100 transition ${isSelected ? "hover:text-indigo-600 hover:bg-indigo-100" : "hover:text-indigo-500 hover:bg-slate-100"}`}
-                            title="Recalibrate Layer Height"
-                          >
-                            <Edit3 className="w-3 h-3" />
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                  </div>
+                {/* Tick Box/Checkbox container on left */}
+                <div 
+                  className="flex items-center justify-center pt-0.5"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <label className="relative flex items-center justify-center cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={isChecked}
+                      onChange={() => handleToggleCheck(seg.id)}
+                      className="peer h-4 w-4 rounded border border-slate-300 checked:border-indigo-600 checked:bg-indigo-600 focus:outline-none transition-all duration-150 cursor-pointer appearance-none"
+                    />
+                    <span className="absolute text-white opacity-0 peer-checked:opacity-100 pointer-events-none transition-all duration-150 flex items-center justify-center">
+                      <svg
+                        xmlns="http://www.w3.org/2000/svg"
+                        className="h-2.5 w-2.5 stroke-white"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="3.5"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      >
+                        <polyline points="20 6 9 17 4 12" />
+                      </svg>
+                    </span>
+                  </label>
                 </div>
 
-                {/* Sub-stats layout */}
-                <div className="grid grid-cols-2 gap-x-2 gap-y-1 text-[9px] font-mono mt-2 pt-2 border-t border-slate-100 text-slate-400">
-                  <div>Travel distance: <strong className={isSelected ? "text-indigo-700" : "text-slate-600"}>{travel}mm</strong></div>
-                  <div className="text-right">
-                    {isSelected && (
-                      <span className="text-[8px] uppercase tracking-wider font-bold text-indigo-700 px-1.5 py-0.5 rounded bg-indigo-100">ACTIVE</span>
-                    )}
+                {/* Rest of layer segment details */}
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center justify-between mb-1.5">
+                    <div className="flex items-center gap-2">
+                      {/* Vertical Segment highlight bar matching instructions */}
+                      <div className={`w-1 h-7 rounded-full ${isSelected ? "bg-indigo-600" : isEmpty ? "bg-purple-400" : isChecked ? "bg-indigo-400" : "bg-slate-300"}`}></div>
+                      <div>
+                        <p className={`text-xs font-bold ${isSelected ? "text-indigo-950" : isEmpty ? "text-purple-950" : "text-slate-800"}`}>
+                          Segment #{idx + 1}
+                        </p>
+                        <p className="text-[10px] font-mono text-slate-400 font-medium">
+                          Points: {seg.points.length}
+                        </p>
+                      </div>
+                    </div>
+
+                    {/* Actions area with Onion skin overlay toggle & Z coordinate modifier */}
+                    <div className="flex items-center gap-1.5">
+                      {/* Onion Skin button (only show for segments with points) */}
+                      {!isEmpty && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onToggleOnionSkin(seg.id);
+                          }}
+                          className={`px-1.5 py-0.5 rounded border text-[8.5px] font-mono font-bold flex items-center gap-0.5 transition-all ${
+                            isOnionSkin
+                              ? "bg-fuchsia-50 hover:bg-fuchsia-100 border-fuchsia-300 text-fuchsia-700 shadow-sm"
+                              : "bg-slate-50 hover:bg-slate-100 border-slate-200 text-slate-450 hover:text-slate-600"
+                          }`}
+                          title={isOnionSkin ? "Turn off Onion Skin Overlay" : "Overlay this segment in fuchsia behind working segment"}
+                        >
+                          <Ghost className={`w-2.5 h-2.5 ${isOnionSkin ? "stroke-fuchsia-600 animate-pulse" : "stroke-slate-400"}`} />
+                          <span>{isOnionSkin ? "OVERLAY" : "SKIN"}</span>
+                        </button>
+                      )}
+
+                      {/* Z Coordinate Modifier */}
+                      <div className="flex items-center gap-1 text-[11px]">
+                        {editingZId === seg.id ? (
+                          <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+                            <span className="text-slate-500 font-mono text-[9px]">&Delta;Z:</span>
+                            <input
+                              type="number"
+                              step="0.05"
+                              value={tempZValue}
+                              onChange={(e) => setTempZValue(e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter") saveEditingZ(seg.id);
+                              }}
+                              className="w-12 px-1 py-0.5 border border-indigo-400 rounded bg-white text-slate-800 font-mono text-[10px] text-right focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                              autoFocus
+                            />
+                            <button
+                              onClick={() => saveEditingZ(seg.id)}
+                              className="p-0.5 text-emerald-600 hover:bg-slate-100 rounded"
+                            >
+                              <Check className="w-3 h-3" />
+                            </button>
+                          </div>
+                        ) : (
+                          <div className="flex items-center gap-0.5 font-mono">
+                            <span className="text-[9px] text-slate-400">Z:</span>
+                            <strong className={`px-1.5 py-0.5 rounded font-mono text-[9.5px] font-bold ${isSelected ? "text-indigo-805 bg-indigo-100" : "text-slate-700 bg-slate-100"}`}>
+                              {seg.zValue.toFixed(4)}
+                            </strong>
+                            <button
+                              onClick={(e) => startEditingZ(e, seg)}
+                              className={`p-0.5 rounded opacity-60 hover:opacity-100 transition ${isSelected ? "hover:text-indigo-600 hover:bg-indigo-150/50" : "hover:text-indigo-500 hover:bg-slate-100"}`}
+                              title="Recalibrate Layer Height"
+                            >
+                              <Edit3 className="w-2.5 h-2.5" />
+                            </button>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Delete Individual Segment */}
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleDeleteIndividualClick(seg.id, idx + 1);
+                        }}
+                        className="p-1 rounded opacity-60 hover:opacity-100 hover:text-rose-650 hover:bg-rose-50 text-slate-400 transition flex-shrink-0"
+                        title="Delete entire layer segment and all its coordinate points"
+                        id={`delete-single-segment-${seg.id}`}
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
                   </div>
-                  <div className="col-span-2 text-[8.5px] flex items-center gap-1 mt-1 text-slate-400">
-                    <Scale className="w-2.5 h-2.5 text-slate-400" />
-                    <span>X: [{bounds.minX.toFixed(1)}, {bounds.maxX.toFixed(1)}]</span>
-                    <span>•</span>
-                    <span>Y: [{bounds.minY.toFixed(1)}, {bounds.maxY.toFixed(1)}]</span>
+
+                  {/* Sub-stats layout */}
+                  <div className="grid grid-cols-2 gap-x-2 gap-y-0.5 text-[9px] font-mono mt-1.5 pt-1.5 border-t border-slate-100 text-slate-400">
+                    <div>Travel: <strong className={isSelected ? "text-indigo-700" : "text-slate-600"}>{travel}mm</strong></div>
+                    <div className="text-right">
+                      {isSelected ? (
+                        <span className="text-[7.5px] uppercase tracking-wider font-bold text-indigo-700 px-1.5 py-0.5 rounded bg-indigo-100/80 leading-none">ACTIVE</span>
+                      ) : isEmpty ? (
+                        <span className="text-[7.5px] uppercase tracking-wider font-bold text-purple-600 px-1.5 py-0.5 rounded bg-purple-55 leading-none border border-purple-200">EMPTY</span>
+                      ) : null}
+                    </div>
+                    {!isEmpty && (
+                      <div className="col-span-2 text-[8px] flex items-center gap-1 mt-0.5 text-slate-400 leading-none">
+                        <Scale className="w-2 h-2 text-slate-400 flex-shrink-0" />
+                        <span>X: [{bounds.minX.toFixed(1)}, {bounds.maxX.toFixed(1)}]</span>
+                        <span>•</span>
+                        <span>Y: [{bounds.minY.toFixed(1)}, {bounds.maxY.toFixed(1)}]</span>
+                      </div>
+                    )}
                   </div>
                 </div>
 
@@ -201,6 +441,121 @@ export default function SegmentSidebar({
           })
         )}
       </div>
+
+      {/* Segment Action Footer for Batch Export & Batch Delete */}
+      <div className="bg-slate-50 border-t border-slate-200 p-3.5 flex flex-col gap-2.5">
+        <div className="flex items-center justify-between text-[10px] text-slate-500 font-mono font-bold px-1 select-none">
+          <button
+            onClick={handleToggleAll}
+            className="text-indigo-600 hover:text-indigo-800 transition cursor-pointer hover:underline uppercase text-[9px] tracking-wider font-extrabold"
+          >
+            {checkedSegmentIds.size === segments.length ? "DESELECT ALL" : "SELECT ALL"}
+          </button>
+          <span className="bg-slate-200/70 text-slate-600 px-1.5 py-0.5 rounded font-mono text-[9px] font-bold">
+            SELECTED: {checkedSegmentIds.size} / {segments.length}
+          </span>
+        </div>
+
+        <div className="grid grid-cols-2 gap-2">
+          <div className="relative flex items-center w-full">
+            <button
+              onClick={handleExportSelectedCSV}
+              disabled={checkedSegmentIds.size === 0}
+              className="flex-1 py-2 px-1.5 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-200 disabled:cursor-not-allowed text-white disabled:text-slate-400 font-mono text-[9.5px] font-bold uppercase tracking-wider rounded-l border-y border-l border-indigo-750 disabled:border-transparent transition-all hover:shadow-md flex items-center justify-center gap-1 cursor-pointer leading-tight"
+              id="export-selected-layers-csv-btn"
+              title="Export selected layer toolpaths as CSV"
+            >
+              <Download className="w-3.5 h-3.5 flex-shrink-0" />
+              <span>Export ({checkedSegmentIds.size})</span>
+            </button>
+            <button
+              onClick={() => checkedSegmentIds.size > 0 && setWithSegmentExportDropdown(!withSegmentExportDropdown)}
+              disabled={checkedSegmentIds.size === 0}
+              className="py-2 px-1.5 bg-indigo-700 hover:bg-indigo-600 disabled:bg-slate-200 disabled:cursor-not-allowed text-white disabled:text-slate-400 font-mono text-[9.5px] font-bold uppercase tracking-wider rounded-r border border-l-0 border-indigo-700 disabled:border-transparent transition-all hover:shadow-md flex items-center justify-center cursor-pointer"
+              id="export-selected-layers-dropdown-trigger"
+              title="Select layers export format"
+            >
+              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M19 9l-7 7-7-7" />
+              </svg>
+            </button>
+
+            {withSegmentExportDropdown && checkedSegmentIds.size > 0 && (
+              <>
+                <div 
+                  className="fixed inset-0 z-40 bg-transparent" 
+                  onClick={() => setWithSegmentExportDropdown(false)}
+                />
+                <div className="absolute left-0 bottom-full mb-1.5 w-48 bg-white border border-slate-200 rounded-lg shadow-xl z-50 py-1.5 animate-fadeIn font-sans">
+                  <div className="px-3 py-1 text-[8.5px] font-bold text-slate-400 uppercase tracking-widest select-none">
+                    Export Format
+                  </div>
+                  <button
+                    onClick={() => {
+                      handleExportSelectedCSV();
+                      setWithSegmentExportDropdown(false);
+                    }}
+                    className="w-full text-left px-3 py-2 text-xs text-slate-700 hover:bg-indigo-50 hover:text-indigo-700 font-medium transition flex items-center gap-2 cursor-pointer"
+                  >
+                    <span className="w-2 h-2 rounded-full bg-indigo-500 inline-block"></span>
+                    <span>Dispense CSV (.csv)</span>
+                  </button>
+                  <button
+                    onClick={() => {
+                      handleExportSelectedXLSX();
+                      setWithSegmentExportDropdown(false);
+                    }}
+                    className="w-full text-left px-3 py-2 text-xs text-slate-700 hover:bg-emerald-50 hover:text-emerald-700 font-medium transition flex items-center gap-2 cursor-pointer"
+                  >
+                    <span className="w-2 h-2 rounded-full bg-emerald-500 inline-block"></span>
+                    <span>Excel Spreadsheet (.xlsx)</span>
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+
+          <button
+            onClick={handleDeleteBatchClick}
+            disabled={checkedSegmentIds.size === 0}
+            className="py-2 px-1.5 bg-rose-50 hover:bg-rose-100 disabled:bg-slate-105 disabled:cursor-not-allowed text-rose-600 disabled:text-slate-400 border border-rose-200 disabled:border-transparent font-mono text-[9.5px] font-bold uppercase tracking-wider rounded transition-all hover:shadow-md flex items-center justify-center gap-1.5 cursor-pointer leading-tight"
+            id="delete-selected-layers-btn"
+            title="Permanently remove all checked layers and their respective coordinate data"
+          >
+            <Trash2 className="w-3.5 h-3.5 flex-shrink-0" />
+            <span>Delete ({checkedSegmentIds.size})</span>
+          </button>
+        </div>
+      </div>
+
+      {/* Elegant Translucent Delete Confirmation Modal */}
+      {deleteConfirmation && (
+        <div className="absolute inset-0 z-50 bg-slate-950/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white border border-slate-200 rounded-lg shadow-2xl p-4.5 max-w-[280px] sm:max-w-xs w-full animate-in fade-in duration-200">
+            <h4 className="text-xs font-bold font-mono text-rose-600 flex items-center gap-2 mb-2.5 uppercase tracking-wide">
+              <Trash2 className="w-4 h-4 text-rose-500 animate-pulse" />
+              <span>{deleteConfirmation.title}</span>
+            </h4>
+            <p className="text-[10.5px] text-slate-655 leading-relaxed font-mono font-medium mb-4">
+              {deleteConfirmation.description}
+            </p>
+            <div className="flex items-center justify-end gap-2 text-[10px]">
+              <button
+                onClick={() => setDeleteConfirmation(null)}
+                className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 rounded font-mono uppercase font-bold transition-all cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={confirmDeleteAction}
+                className="px-2.5 py-1.5 bg-rose-600 hover:bg-rose-700 text-white rounded border border-rose-700 font-mono uppercase font-bold shadow-sm transition-all cursor-pointer"
+              >
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

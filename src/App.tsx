@@ -4,7 +4,7 @@
  */
 
 import { useState, useEffect, useMemo } from "react";
-import { ToolpathPoint, GridSettings } from "./types";
+import { ToolpathPoint, GridSettings, ToolpathSegment } from "./types";
 import { generateSampleSpiral, splitToolpathByZ, generateId } from "./utils";
 import Toolbar from "./components/Toolbar";
 import InteractiveGrid from "./components/InteractiveGrid";
@@ -15,7 +15,15 @@ import { Sliders, Sparkles, Terminal, Cpu } from "lucide-react";
 export default function App() {
   // Central Coordinate Raw Points Dataset
   const [rawPoints, setRawPoints] = useState<ToolpathPoint[]>([]);
+  const [emptySegments, setEmptySegments] = useState<ToolpathSegment[]>([]);
+  const [lastSelectedZ, setLastSelectedZ] = useState<number | null>(null);
   const [fileName, setFileName] = useState<string>("helix_spiral_sample.csv");
+
+  // Default offset values for inserting coordinates
+  const [insertOffset, setInsertOffset] = useState<{ x: number; y: number }>({ x: 5.0, y: 5.0 });
+  const [insertMode, setInsertMode] = useState<"before" | "after">("after");
+  const [isArrowDrawingEnabled, setIsArrowDrawingEnabled] = useState<boolean>(false);
+  const [arrowDrawDistance, setArrowDrawDistance] = useState<number>(5.0);
 
   // Undo / Redo history state stacks
   const [history, setHistory] = useState<ToolpathPoint[][]>([]);
@@ -115,17 +123,129 @@ export default function App() {
     return splitToolpathByZ(rawPoints);
   }, [rawPoints]);
 
+  // Combine real segments with custom empty ones
+  const combinedSegments = useMemo(() => {
+    return [...segments, ...emptySegments];
+  }, [segments, emptySegments]);
+
   // Handle auto-selection of first layer segment after loading
   useEffect(() => {
-    if (segments.length > 0 && !selectedSegmentId) {
-      setSelectedSegmentId(segments[0].id);
+    if (combinedSegments.length > 0 && !selectedSegmentId) {
+      setSelectedSegmentId(combinedSegments[0].id);
     }
-  }, [segments, selectedSegmentId]);
+  }, [combinedSegments, selectedSegmentId]);
+
+  // Track last known Z coordinate of selected segment to handle transitions from empty to real
+  useEffect(() => {
+    const active = combinedSegments.find((s) => s.id === selectedSegmentId);
+    if (active) {
+      setLastSelectedZ(active.zValue);
+    } else if (lastSelectedZ !== null) {
+      const matchingReal = segments.find((s) => Math.abs(s.zValue - lastSelectedZ) < 0.0001);
+      if (matchingReal) {
+        setSelectedSegmentId(matchingReal.id);
+      }
+    }
+  }, [selectedSegmentId, combinedSegments, lastSelectedZ, segments]);
 
   // Find currently active segment
   const activeSegment = useMemo(() => {
-    return segments.find((s) => s.id === selectedSegmentId) || null;
-  }, [segments, selectedSegmentId]);
+    return combinedSegments.find((s) => s.id === selectedSegmentId) || null;
+  }, [combinedSegments, selectedSegmentId]);
+
+  const handleArrowKeyDraw = (dx: number, dy: number) => {
+    const activePoints = activeSegment ? activeSegment.points : [];
+    if (activePoints.length === 0) {
+      pushToHistory();
+      const zVal = activeSegment ? activeSegment.zValue : 0;
+      const newPoint: ToolpathPoint = {
+        id: generateId(),
+        originalIndex: rawPoints.length,
+        type: "Line Passing",
+        x: dx,
+        y: dy,
+        z: zVal,
+        speed: 1000
+      };
+      setEmptySegments((prev) => prev.filter((s) => s.id !== selectedSegmentId));
+      setRawPoints((prev) => [...prev, newPoint]);
+      setSelectedPointId(newPoint.id);
+      return;
+    }
+
+    const refPoint = activePoints.find((p) => p.id === selectedPointId) || activePoints[activePoints.length - 1];
+    if (!refPoint) return;
+
+    pushToHistory();
+    const index = rawPoints.findIndex((p) => p.id === refPoint.id);
+    if (index === -1) return;
+
+    const newPt: ToolpathPoint = {
+      id: generateId(),
+      originalIndex: rawPoints.length,
+      type: "Line Passing",
+      x: Math.round((refPoint.x + dx) * 1000) / 1000,
+      y: Math.round((refPoint.y + dy) * 1000) / 1000,
+      z: refPoint.z,
+      speed: refPoint.speed
+    };
+
+    const newPoints = [...rawPoints];
+    const spliceIndex = insertMode === "before" ? index : index + 1;
+    newPoints.splice(spliceIndex, 0, newPt);
+    setRawPoints(newPoints);
+    setSelectedPointId(newPt.id);
+  };
+
+  // Keyboard shortcut listener to handle arrow drawing triggers
+  useEffect(() => {
+    if (!isArrowDrawingEnabled) return;
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Ignore shortcut actions if any text/form input is active to avoid disrupting typing
+      const activeEl = document.activeElement;
+      if (activeEl) {
+        const tagName = activeEl.tagName.toUpperCase();
+        if (
+          tagName === "INPUT" ||
+          tagName === "SELECT" ||
+          tagName === "TEXTAREA" ||
+          activeEl.hasAttribute("contenteditable") ||
+          activeEl.getAttribute("contenteditable") === "true"
+        ) {
+          return;
+        }
+      }
+
+      let dx = 0;
+      let dy = 0;
+      let handled = false;
+
+      if (e.key === "ArrowUp") {
+        dy = arrowDrawDistance;
+        handled = true;
+      } else if (e.key === "ArrowDown") {
+        dy = -arrowDrawDistance;
+        handled = true;
+      } else if (e.key === "ArrowLeft") {
+        dx = -arrowDrawDistance;
+        handled = true;
+      } else if (e.key === "ArrowRight") {
+        dx = arrowDrawDistance;
+        handled = true;
+      }
+
+      if (handled) {
+        e.preventDefault();
+        handleArrowKeyDraw(dx, dy);
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [isArrowDrawingEnabled, rawPoints, selectedSegmentId, selectedPointId, insertMode, activeSegment, arrowDrawDistance]);
 
   // Find currently active onion skin segment
   const onionSkinSegment = useMemo(() => {
@@ -141,6 +261,8 @@ export default function App() {
     pushToHistory();
     setRawPoints(points);
     setFileName(filename);
+    setEmptySegments([]);
+    setLastSelectedZ(null);
     setSelectedSegmentId(null);
     setSelectedPointId(null);
   };
@@ -148,6 +270,48 @@ export default function App() {
   const handleSelectSegment = (id: string | null) => {
     setSelectedSegmentId(id);
     setSelectedPointId(null);
+  };
+
+  const handleAddEmptySegment = (zValue: number) => {
+    const id = `empty-segment-${generateId()}`;
+    const existsInPoints = rawPoints.some((p) => Math.abs(p.z - zValue) < 0.0001);
+    const existsInEmpty = emptySegments.some((s) => Math.abs(s.zValue - zValue) < 0.0001);
+    
+    if (existsInPoints || existsInEmpty) {
+      console.warn(`Layer height Z:${zValue} already exists.`);
+      return;
+    }
+
+    const newEmptySegment: ToolpathSegment = {
+      id,
+      zValue,
+      points: [],
+      color: "#a855f7"
+    };
+
+    setEmptySegments((prev) => [...prev, newEmptySegment]);
+    setSelectedSegmentId(id);
+    setSelectedPointId(null);
+  };
+
+  const handleAddFirstPointToSegment = () => {
+    const emptySeg = emptySegments.find((s) => s.id === selectedSegmentId);
+    if (!emptySeg) return;
+
+    pushToHistory();
+    const newPoint: ToolpathPoint = {
+      id: generateId(),
+      originalIndex: rawPoints.length,
+      type: "Line Passing",
+      x: 0,
+      y: 0,
+      z: emptySeg.zValue,
+      speed: 1000
+    };
+
+    setEmptySegments((prev) => prev.filter((s) => s.id !== selectedSegmentId));
+    setRawPoints((prev) => [...prev, newPoint]);
+    setSelectedPointId(newPoint.id);
   };
 
   const handleSelectPoint = (id: string | null) => {
@@ -169,6 +333,23 @@ export default function App() {
 
   const handleDeletePoint = (id: string) => {
     pushToHistory();
+    const pointToDelete = rawPoints.find((p) => p.id === id);
+    if (pointToDelete) {
+      const remainingWithZ = rawPoints.filter((p) => Math.abs(p.z - pointToDelete.z) < 0.0001 && p.id !== id);
+      if (remainingWithZ.length === 0) {
+        // This was the last point in this Z layer! Convert it into an empty segment
+        const id = `empty-segment-${generateId()}`;
+        const newEmptySegment: ToolpathSegment = {
+          id,
+          zValue: pointToDelete.z,
+          points: [],
+          color: "#a855f7"
+        };
+        setEmptySegments((prev) => [...prev, newEmptySegment]);
+        setSelectedSegmentId(id);
+      }
+    }
+
     setRawPoints((prev) => prev.filter((p) => p.id !== id));
     if (selectedPointId === id) {
       setSelectedPointId(null);
@@ -184,15 +365,16 @@ export default function App() {
     const offsetPt: ToolpathPoint = {
       id: generateId(),
       originalIndex: rawPoints.length,
-      type: "Line passing", // Insert standard dispensing movement type 
-      x: base.x + 5.0,
-      y: base.y + 5.0,
+      type: "Line Passing", // Insert standard dispensing movement type 
+      x: base.x + insertOffset.x,
+      y: base.y + insertOffset.y,
       z: base.z,
       speed: base.speed
     };
 
     const newPoints = [...rawPoints];
-    newPoints.splice(index + 1, 0, offsetPt);
+    const spliceIndex = insertMode === "before" ? index : index + 1;
+    newPoints.splice(spliceIndex, 0, offsetPt);
     setRawPoints(newPoints);
     setSelectedPointId(offsetPt.id);
   };
@@ -211,6 +393,16 @@ export default function App() {
 
   const handleUpdateSegmentZ = (segmentId: string, newZ: number) => {
     pushToHistory();
+
+    // Check if it is an empty segment and update its zValue directly
+    const emptySeg = emptySegments.find((s) => s.id === segmentId);
+    if (emptySeg) {
+      setEmptySegments((prev) =>
+        prev.map((s) => (s.id === segmentId ? { ...s, zValue: newZ } : s))
+      );
+      return;
+    }
+
     const targetSegment = segments.find((s) => s.id === segmentId);
     if (!targetSegment) return;
 
@@ -218,6 +410,33 @@ export default function App() {
     setRawPoints((prev) =>
       prev.map((p) => (idsToUpdate.has(p.id) ? { ...p, z: newZ } : p))
     );
+  };
+
+  const handleDeleteSegments = (segmentIds: string[]) => {
+    pushToHistory();
+    const idsSet = new Set(segmentIds);
+
+    // Filter out any matching custom empty segments
+    setEmptySegments((prev) => prev.filter((s) => !idsSet.has(s.id)));
+
+    // Find the real segments being deleted 
+    const deletedRealSegments = segments.filter((s) => idsSet.has(s.id));
+
+    // Filter raw points to remove coordinates belonging to the deleted levels
+    setRawPoints((prev) =>
+      prev.filter((p) => {
+        const shouldDelete = deletedRealSegments.some(
+          (s) => Math.abs(p.z - s.zValue) < 0.0001
+        );
+        return !shouldDelete;
+      })
+    );
+
+    // Clean up selections if they belonged to deleted items
+    if (selectedSegmentId && idsSet.has(selectedSegmentId)) {
+      setSelectedSegmentId(null);
+      setSelectedPointId(null);
+    }
   };
 
   // General manipulations
@@ -297,12 +516,15 @@ export default function App() {
         <div className="lg:col-span-3 space-y-6 flex flex-col h-full">
           
           <SegmentSidebar
-            segments={segments}
+            segments={combinedSegments}
             selectedSegmentId={selectedSegmentId}
             onSelectSegment={handleSelectSegment}
             onUpdateSegmentZ={handleUpdateSegmentZ}
             onionSkinSegmentId={onionSkinSegmentId}
             onToggleOnionSkin={handleToggleOnionSkin}
+            fileName={fileName}
+            onAddEmptySegment={handleAddEmptySegment}
+            onDeleteSegments={handleDeleteSegments}
           />
 
           {/* CNC Modifiers tool card with bright styling */}
@@ -382,7 +604,7 @@ export default function App() {
         </div>
 
         {/* Middle Section: Active 2D SVG canvas graph viewport */}
-        <div className="lg:col-span-6 aspect-square w-full h-auto max-w-full flex flex-col">
+        <div className="lg:col-span-6 w-full flex flex-col items-center justify-start min-h-[600px] overflow-visible">
           <InteractiveGrid
             points={activeSegment ? activeSegment.points : []}
             onionSkinPoints={onionSkinSegment ? onionSkinSegment.points : undefined}
@@ -394,6 +616,7 @@ export default function App() {
             highlightColor={activeSegment ? activeSegment.color : undefined}
             activeSegmentId={selectedSegmentId || undefined}
             onDragStart={() => pushToHistory()}
+            fileName={fileName}
           />
         </div>
 
@@ -410,6 +633,15 @@ export default function App() {
             gridSettings={gridSettings}
             setGridSettings={setGridSettings}
             onRearrangePoints={handleRearrangePoints}
+            insertOffset={insertOffset}
+            onUpdateInsertOffset={setInsertOffset}
+            insertMode={insertMode}
+            onUpdateInsertMode={setInsertMode}
+            onAddFirstPointToSegment={handleAddFirstPointToSegment}
+            isArrowDrawingEnabled={isArrowDrawingEnabled}
+            onToggleArrowDrawing={() => setIsArrowDrawingEnabled((prev) => !prev)}
+            arrowDrawDistance={arrowDrawDistance}
+            onUpdateArrowDrawDistance={setArrowDrawDistance}
           />
 
           {/* Telemetry and Stats Console Container formatted precisely per design specs */}
