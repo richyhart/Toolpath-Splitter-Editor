@@ -5,7 +5,7 @@
 
 import React, { useState, useEffect } from "react";
 import { ToolpathSegment } from "../types";
-import { Layers, Edit3, Check, Scale, Ghost, Download, Plus, Trash2 } from "lucide-react";
+import { Layers, Edit3, Edit2, Check, X, Scale, Ghost, Download, Plus, Trash2, Copy, ArrowLeftRight } from "lucide-react";
 import { exportToCSV, exportToXLSX } from "../utils";
 
 interface SegmentSidebarProps {
@@ -18,6 +18,10 @@ interface SegmentSidebarProps {
   fileName?: string;
   onAddEmptySegment?: (zValue: number) => void;
   onDeleteSegments?: (ids: string[]) => void;
+  onRenameSegment?: (segmentId: string, newName: string) => void;
+  onDuplicateSegment?: (segmentId: string, newZ: number, newName?: string) => void;
+  onInvertSegment?: (segmentId: string) => void;
+  onInvertSegments?: (segmentIds: string[]) => void;
 }
 
 export default function SegmentSidebar({
@@ -29,12 +33,28 @@ export default function SegmentSidebar({
   onToggleOnionSkin,
   fileName,
   onAddEmptySegment,
-  onDeleteSegments
+  onDeleteSegments,
+  onRenameSegment,
+  onDuplicateSegment,
+  onInvertSegment,
+  onInvertSegments
 }: SegmentSidebarProps) {
   const [editingZId, setEditingZId] = useState<string | null>(null);
   const [tempZValue, setTempZValue] = useState<string>("");
   const [newZInput, setNewZInput] = useState<string>("1.000");
   const [withSegmentExportDropdown, setWithSegmentExportDropdown] = useState(false);
+
+  // Segment Rename state
+  const [editingNameId, setEditingNameId] = useState<string | null>(null);
+  const [tempNameValue, setTempNameValue] = useState<string>("");
+
+  // Duplicate Segment modal state
+  const [duplicateModal, setDuplicateModal] = useState<{
+    segment: ToolpathSegment;
+    segmentNum: number;
+    newZ: string;
+    newName: string;
+  } | null>(null);
 
   const [deleteConfirmation, setDeleteConfirmation] = useState<{
     ids: string[];
@@ -180,11 +200,11 @@ export default function SegmentSidebar({
     setEditingZId(null);
   };
 
-  const handleDeleteIndividualClick = (segmentId: string, segmentNum: number) => {
+  const handleDeleteIndividualClick = (segmentId: string, segmentNum: number, segName?: string) => {
     setDeleteConfirmation({
       ids: [segmentId],
       title: "Delete Segment",
-      description: `Are you sure you want to delete Segment #${segmentNum}? All coordinate points belonging to this Z axis level will be permanently deleted.`
+      description: `Are you sure you want to delete ${segName || `Segment ${segmentNum}`}? All coordinate points belonging to this Z axis level will be permanently deleted.`
     });
   };
 
@@ -212,8 +232,82 @@ export default function SegmentSidebar({
     setDeleteConfirmation(null);
   };
 
+  // Renaming segment handlers
+  const startEditingName = (seg: ToolpathSegment, segmentNum: number) => {
+    setEditingNameId(seg.id);
+    setTempNameValue(seg.name || `Segment ${segmentNum}`);
+  };
+
+  const saveEditingName = (segId: string) => {
+    const trimmed = tempNameValue.trim();
+    if (trimmed && onRenameSegment) {
+      onRenameSegment(segId, trimmed);
+    }
+    setEditingNameId(null);
+  };
+
+  // Suggest intelligent next non-colliding Z height for duplicates
+  const suggestNextZ = (targetSeg: ToolpathSegment, allSegs: ToolpathSegment[]): string => {
+    if (allSegs.length === 0) return "1.000";
+    const existingZs = new Set(allSegs.map((s) => parseFloat(s.zValue.toFixed(4))));
+
+    let step = 1.0;
+    if (allSegs.length >= 2) {
+      const diffs: number[] = [];
+      for (let i = 1; i < allSegs.length; i++) {
+        diffs.push(allSegs[i].zValue - allSegs[i - 1].zValue);
+      }
+      const nonZeroDiffs = diffs.filter((d) => Math.abs(d) > 0.0001);
+      if (nonZeroDiffs.length > 0) {
+        step = nonZeroDiffs[nonZeroDiffs.length - 1];
+      }
+    }
+
+    let candidate = targetSeg.zValue + step;
+    let attempts = 0;
+    while (existingZs.has(parseFloat(candidate.toFixed(4))) && attempts < 100) {
+      candidate += step;
+      attempts++;
+    }
+
+    if (existingZs.has(parseFloat(candidate.toFixed(4)))) {
+      const maxZ = Math.max(...allSegs.map((s) => s.zValue));
+      candidate = maxZ + 1.0;
+    }
+
+    return candidate.toFixed(3);
+  };
+
+  const handleDuplicateClick = (seg: ToolpathSegment, segmentNum: number) => {
+    const suggestedZ = suggestNextZ(seg, segments);
+    const currentName = seg.name || `Segment ${segmentNum}`;
+    setDuplicateModal({
+      segment: seg,
+      segmentNum,
+      newZ: suggestedZ,
+      newName: `${currentName} (Copy)`
+    });
+  };
+
+  const confirmDuplicateAction = () => {
+    if (!duplicateModal || !onDuplicateSegment) return;
+    const parsedZ = parseFloat(duplicateModal.newZ);
+    if (isNaN(parsedZ)) return;
+
+    onDuplicateSegment(
+      duplicateModal.segment.id,
+      parsedZ,
+      duplicateModal.newName.trim() || `${duplicateModal.segment.name || `Segment ${duplicateModal.segmentNum}`} (Copy)`
+    );
+    setDuplicateModal(null);
+  };
+
+  const isDuplicateZTaken = duplicateModal
+    ? segments.some((s) => Math.abs(s.zValue - parseFloat(duplicateModal.newZ)) < 0.0001)
+    : false;
+
   return (
-    <div className="w-full bg-white border border-slate-300 rounded-lg overflow-hidden shadow-lg flex flex-col h-[320px] lg:h-[620px]">
+    <div className="relative w-[375px] max-w-full bg-white border border-slate-300 rounded-lg overflow-hidden shadow-lg flex flex-col h-[320px] lg:h-[620px]" id="segment-sidebar">
       {/* Sidebar Header */}
       <div className="bg-slate-100 px-4 py-3.5 border-b border-slate-300 flex items-center justify-between">
         <div className="flex items-center gap-2 text-slate-800 font-semibold font-mono text-[11px] uppercase tracking-widest">
@@ -325,43 +419,87 @@ export default function SegmentSidebar({
 
                 {/* Rest of layer segment details */}
                 <div className="flex-1 min-w-0">
-                  <div className="flex items-center justify-between mb-1.5">
-                    <div className="flex items-center gap-2">
-                      {/* Vertical Segment highlight bar matching instructions */}
-                      <div className={`w-1 h-7 rounded-full ${isSelected ? "bg-indigo-600" : isEmpty ? "bg-purple-400" : isChecked ? "bg-indigo-400" : "bg-slate-300"}`}></div>
-                      <div>
-                        <p className={`text-xs font-bold ${isSelected ? "text-indigo-950" : isEmpty ? "text-purple-950" : "text-slate-800"}`}>
-                          Segment #{idx + 1}
-                        </p>
-                        <p className="text-[10px] font-mono text-slate-400 font-medium">
-                          Points: {seg.points.length}
-                        </p>
-                      </div>
+                  {/* Top: Name and Points / Status */}
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2 min-w-0 flex-1">
+                      {/* Vertical Segment highlight bar */}
+                      <div className={`w-1 h-5 rounded-full shrink-0 ${isSelected ? "bg-indigo-600" : isEmpty ? "bg-purple-400" : isChecked ? "bg-indigo-400" : "bg-slate-300"}`}></div>
+                      
+                      {editingNameId === seg.id ? (
+                        <div className="flex items-center gap-1 flex-1 min-w-0" onClick={(e) => e.stopPropagation()}>
+                          <input
+                            type="text"
+                            value={tempNameValue}
+                            onChange={(e) => setTempNameValue(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") saveEditingName(seg.id);
+                              if (e.key === "Escape") setEditingNameId(null);
+                            }}
+                            className="flex-1 min-w-0 px-1.5 py-0.5 text-xs font-bold border border-indigo-500 rounded bg-white text-slate-800 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                            autoFocus
+                            id={`rename-input-${seg.id}`}
+                          />
+                          <button
+                            onClick={() => saveEditingName(seg.id)}
+                            className="p-1 text-emerald-600 hover:bg-emerald-50 rounded cursor-pointer"
+                            title="Save name"
+                          >
+                            <Check className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            onClick={() => setEditingNameId(null)}
+                            className="p-1 text-slate-400 hover:bg-slate-100 rounded cursor-pointer"
+                            title="Cancel"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-1 group/name min-w-0 flex-1">
+                          <p
+                            className={`text-xs font-bold truncate cursor-pointer hover:underline ${isSelected ? "text-indigo-950" : isEmpty ? "text-purple-950" : "text-slate-800"}`}
+                            title={`${seg.name || `Segment ${idx + 1}`} (Click to rename)`}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              startEditingName(seg, idx + 1);
+                            }}
+                          >
+                            {seg.name || `Segment ${idx + 1}`}
+                          </p>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              startEditingName(seg, idx + 1);
+                            }}
+                            className="p-0.5 rounded opacity-0 group-hover/name:opacity-100 hover:text-indigo-600 hover:bg-indigo-50 text-slate-400 transition shrink-0 cursor-pointer"
+                            title="Rename Segment"
+                            id={`rename-btn-${seg.id}`}
+                          >
+                            <Edit2 className="w-2.5 h-2.5" />
+                          </button>
+                        </div>
+                      )}
                     </div>
 
-                    {/* Actions area with Onion skin overlay toggle & Z coordinate modifier */}
-                    <div className="flex items-center gap-1.5">
-                      {/* Onion Skin button (only show for segments with points) */}
-                      {!isEmpty && (
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            onToggleOnionSkin(seg.id);
-                          }}
-                          className={`px-1.5 py-0.5 rounded border text-[8.5px] font-mono font-bold flex items-center gap-0.5 transition-all ${
-                            isOnionSkin
-                              ? "bg-fuchsia-50 hover:bg-fuchsia-100 border-fuchsia-300 text-fuchsia-700 shadow-sm"
-                              : "bg-slate-50 hover:bg-slate-100 border-slate-200 text-slate-450 hover:text-slate-600"
-                          }`}
-                          title={isOnionSkin ? "Turn off Onion Skin Overlay" : "Overlay this segment in fuchsia behind working segment"}
-                        >
-                          <Ghost className={`w-2.5 h-2.5 ${isOnionSkin ? "stroke-fuchsia-600 animate-pulse" : "stroke-slate-400"}`} />
-                          <span>{isOnionSkin ? "OVERLAY" : "SKIN"}</span>
-                        </button>
-                      )}
+                    {/* Points count badge and Status on the right of name row */}
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <span className="text-[10px] font-mono text-slate-500 font-medium bg-slate-100/90 px-1.5 py-0.5 rounded border border-slate-200/60">
+                        {seg.points.length} pts
+                      </span>
+                      {isSelected ? (
+                        <span className="text-[7.5px] uppercase tracking-wider font-bold text-indigo-700 px-1.5 py-0.5 rounded bg-indigo-100/80 leading-none">ACTIVE</span>
+                      ) : isEmpty ? (
+                        <span className="text-[7.5px] uppercase tracking-wider font-bold text-purple-600 px-1.5 py-0.5 rounded bg-purple-50 leading-none border border-purple-200">EMPTY</span>
+                      ) : null}
+                    </div>
+                  </div>
 
+                  {/* Actions row: Buttons to edit Z layer height, invert, copy and delete (below segment name) */}
+                  <div className="flex items-center justify-between gap-1 text-[11px] mt-2 pt-1.5 border-t border-slate-200/70">
+                    {/* Left: Z Coordinate modifier and Onion skin */}
+                    <div className="flex items-center gap-1.5">
                       {/* Z Coordinate Modifier */}
-                      <div className="flex items-center gap-1 text-[11px]">
+                      <div className="flex items-center gap-0.5 font-mono">
                         {editingZId === seg.id ? (
                           <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
                             <span className="text-slate-500 font-mono text-[9px]">&Delta;Z:</span>
@@ -373,40 +511,94 @@ export default function SegmentSidebar({
                               onKeyDown={(e) => {
                                 if (e.key === "Enter") saveEditingZ(seg.id);
                               }}
-                              className="w-12 px-1 py-0.5 border border-indigo-400 rounded bg-white text-slate-800 font-mono text-[10px] text-right focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                              className="w-14 px-1 py-0.5 border border-indigo-400 rounded bg-white text-slate-800 font-mono text-[10px] text-right focus:outline-none focus:ring-1 focus:ring-indigo-500"
                               autoFocus
                             />
                             <button
                               onClick={() => saveEditingZ(seg.id)}
-                              className="p-0.5 text-emerald-600 hover:bg-slate-100 rounded"
+                              className="p-0.5 text-emerald-600 hover:bg-slate-100 rounded cursor-pointer"
+                              title="Save Z height"
                             >
                               <Check className="w-3 h-3" />
                             </button>
                           </div>
                         ) : (
-                          <div className="flex items-center gap-0.5 font-mono">
-                            <span className="text-[9px] text-slate-400">Z:</span>
-                            <strong className={`px-1.5 py-0.5 rounded font-mono text-[9.5px] font-bold ${isSelected ? "text-indigo-805 bg-indigo-100" : "text-slate-700 bg-slate-100"}`}>
+                          <div className="flex items-center gap-1 font-mono">
+                            <span className="text-[9px] text-slate-400 font-semibold">Z:</span>
+                            <strong className={`px-1.5 py-0.5 rounded font-mono text-[9.5px] font-bold ${isSelected ? "text-indigo-900 bg-indigo-100/90" : "text-slate-700 bg-slate-100"}`}>
                               {seg.zValue.toFixed(4)}
                             </strong>
                             <button
                               onClick={(e) => startEditingZ(e, seg)}
-                              className={`p-0.5 rounded opacity-60 hover:opacity-100 transition ${isSelected ? "hover:text-indigo-600 hover:bg-indigo-150/50" : "hover:text-indigo-500 hover:bg-slate-100"}`}
+                              className={`p-1 rounded opacity-70 hover:opacity-100 transition cursor-pointer ${isSelected ? "hover:text-indigo-600 hover:bg-indigo-100" : "hover:text-indigo-500 hover:bg-slate-100"}`}
                               title="Recalibrate Layer Height"
+                              id={`edit-z-${seg.id}`}
                             >
-                              <Edit3 className="w-2.5 h-2.5" />
+                              <Edit3 className="w-3 h-3" />
                             </button>
                           </div>
                         )}
                       </div>
 
+                      {/* Onion Skin button (only show for segments with points) */}
+                      {!isEmpty && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onToggleOnionSkin(seg.id);
+                          }}
+                          className={`px-1.5 py-0.5 rounded border text-[8.5px] font-mono font-bold flex items-center gap-0.5 transition-all cursor-pointer ${
+                            isOnionSkin
+                              ? "bg-fuchsia-50 hover:bg-fuchsia-100 border-fuchsia-300 text-fuchsia-700 shadow-xs"
+                              : "bg-slate-50 hover:bg-slate-100 border-slate-200 text-slate-500 hover:text-slate-700"
+                          }`}
+                          title={isOnionSkin ? "Turn off Onion Skin Overlay" : "Overlay this segment in fuchsia behind working segment"}
+                        >
+                          <Ghost className={`w-2.5 h-2.5 ${isOnionSkin ? "stroke-fuchsia-600 animate-pulse" : "stroke-slate-400"}`} />
+                          <span>{isOnionSkin ? "OVERLAY" : "SKIN"}</span>
+                        </button>
+                      )}
+                    </div>
+
+                    {/* Right: Invert, Copy (Duplicate), Delete buttons */}
+                    <div className="flex items-center gap-0.5">
+                      {/* Invert Toolpath Direction Button */}
+                      {onInvertSegment && !isEmpty && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onInvertSegment(seg.id);
+                          }}
+                          className="p-1 rounded opacity-70 hover:opacity-100 hover:text-indigo-600 hover:bg-indigo-50 text-slate-500 transition flex-shrink-0 cursor-pointer"
+                          title="Invert toolpath direction of this layer (Start ⇄ Finish, Hotkey: I)"
+                          id={`invert-segment-${seg.id}`}
+                        >
+                          <ArrowLeftRight className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+
+                      {/* Duplicate / Copy Segment Button */}
+                      {onDuplicateSegment && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleDuplicateClick(seg, idx + 1);
+                          }}
+                          className="p-1 rounded opacity-70 hover:opacity-100 hover:text-indigo-600 hover:bg-indigo-50 text-slate-500 transition flex-shrink-0 cursor-pointer"
+                          title="Duplicate / Copy this layer segment"
+                          id={`duplicate-segment-${seg.id}`}
+                        >
+                          <Copy className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+
                       {/* Delete Individual Segment */}
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
-                          handleDeleteIndividualClick(seg.id, idx + 1);
+                          handleDeleteIndividualClick(seg.id, idx + 1, seg.name);
                         }}
-                        className="p-1 rounded opacity-60 hover:opacity-100 hover:text-rose-650 hover:bg-rose-50 text-slate-400 transition flex-shrink-0"
+                        className="p-1 rounded opacity-70 hover:opacity-100 hover:text-rose-600 hover:bg-rose-50 text-slate-500 transition flex-shrink-0 cursor-pointer"
                         title="Delete entire layer segment and all its coordinate points"
                         id={`delete-single-segment-${seg.id}`}
                       >
@@ -416,17 +608,10 @@ export default function SegmentSidebar({
                   </div>
 
                   {/* Sub-stats layout */}
-                  <div className="grid grid-cols-2 gap-x-2 gap-y-0.5 text-[9px] font-mono mt-1.5 pt-1.5 border-t border-slate-100 text-slate-400">
+                  <div className="flex items-center justify-between text-[9px] font-mono mt-1 pt-1 text-slate-400">
                     <div>Travel: <strong className={isSelected ? "text-indigo-700" : "text-slate-600"}>{travel}mm</strong></div>
-                    <div className="text-right">
-                      {isSelected ? (
-                        <span className="text-[7.5px] uppercase tracking-wider font-bold text-indigo-700 px-1.5 py-0.5 rounded bg-indigo-100/80 leading-none">ACTIVE</span>
-                      ) : isEmpty ? (
-                        <span className="text-[7.5px] uppercase tracking-wider font-bold text-purple-600 px-1.5 py-0.5 rounded bg-purple-55 leading-none border border-purple-200">EMPTY</span>
-                      ) : null}
-                    </div>
                     {!isEmpty && (
-                      <div className="col-span-2 text-[8px] flex items-center gap-1 mt-0.5 text-slate-400 leading-none">
+                      <div className="text-[8px] flex items-center gap-1 text-slate-400 leading-none">
                         <Scale className="w-2 h-2 text-slate-400 flex-shrink-0" />
                         <span>X: [{bounds.minX.toFixed(1)}, {bounds.maxX.toFixed(1)}]</span>
                         <span>•</span>
@@ -455,6 +640,18 @@ export default function SegmentSidebar({
             SELECTED: {checkedSegmentIds.size} / {segments.length}
           </span>
         </div>
+
+        {onInvertSegments && checkedSegmentIds.size > 0 && (
+          <button
+            onClick={() => onInvertSegments(Array.from(checkedSegmentIds))}
+            className="w-full py-1.5 px-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded font-mono text-[9px] font-bold uppercase transition flex items-center justify-center gap-1.5 cursor-pointer shadow-2xs hover:shadow-xs active:scale-[0.99]"
+            title="Invert toolpath direction of all checked layers (Start ⇄ Finish)"
+            id="invert-selected-layers-btn"
+          >
+            <ArrowLeftRight className="w-3.5 h-3.5 text-indigo-600" />
+            <span>Invert Checked Layers ({checkedSegmentIds.size})</span>
+          </button>
+        )}
 
         <div className="grid grid-cols-2 gap-2">
           <div className="relative flex items-center w-full">
@@ -551,6 +748,97 @@ export default function SegmentSidebar({
                 className="px-2.5 py-1.5 bg-rose-600 hover:bg-rose-700 text-white rounded border border-rose-700 font-mono uppercase font-bold shadow-sm transition-all cursor-pointer"
               >
                 Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Duplicate Segment Modal */}
+      {duplicateModal && (
+        <div 
+          className="absolute inset-0 z-50 bg-slate-950/60 backdrop-blur-xs flex items-center justify-center p-4"
+          onClick={() => setDuplicateModal(null)}
+        >
+          <div 
+            className="bg-white border border-slate-200 rounded-lg shadow-2xl p-4.5 max-w-[300px] w-full animate-in fade-in duration-200"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h4 className="text-xs font-bold font-mono text-indigo-700 flex items-center gap-2 mb-2 uppercase tracking-wide">
+              <Copy className="w-4 h-4 text-indigo-600" />
+              <span>Duplicate Segment</span>
+            </h4>
+            <p className="text-[10.5px] text-slate-500 mb-3 leading-relaxed font-sans">
+              Create an exact copy of <span className="font-semibold text-slate-800">{duplicateModal.segment.name || `Segment ${duplicateModal.segmentNum}`}</span> ({duplicateModal.segment.points.length} points) at a target Z height.
+            </p>
+
+            <div className="space-y-3 mb-4">
+              <div>
+                <label className="block text-[9.5px] font-mono font-bold uppercase text-slate-500 mb-1">
+                  Duplicate Name:
+                </label>
+                <input
+                  type="text"
+                  value={duplicateModal.newName}
+                  onChange={(e) => setDuplicateModal(prev => prev ? { ...prev, newName: e.target.value } : null)}
+                  className="w-full px-2.5 py-1.5 text-xs font-medium border border-slate-300 rounded bg-white text-slate-800 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
+                  placeholder="Enter segment name"
+                  id="duplicate-segment-name-input"
+                  autoFocus
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !isDuplicateZTaken && !isNaN(parseFloat(duplicateModal.newZ))) {
+                      confirmDuplicateAction();
+                    }
+                    if (e.key === "Escape") setDuplicateModal(null);
+                  }}
+                />
+              </div>
+
+              <div>
+                <label className="block text-[9.5px] font-mono font-bold uppercase text-slate-500 mb-1">
+                  Target Z Coordinate (mm):
+                </label>
+                <div className="relative">
+                  <span className="absolute left-2.5 top-1.5 text-slate-400 font-mono text-[11px] font-bold">Z:</span>
+                  <input
+                    type="number"
+                    step="0.05"
+                    value={duplicateModal.newZ}
+                    onChange={(e) => setDuplicateModal(prev => prev ? { ...prev, newZ: e.target.value } : null)}
+                    className="w-full pl-7 pr-2.5 py-1.5 text-xs font-mono border border-slate-300 rounded bg-white text-slate-800 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
+                    placeholder="0.000"
+                    id="duplicate-segment-z-input"
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && !isDuplicateZTaken && !isNaN(parseFloat(duplicateModal.newZ))) {
+                        confirmDuplicateAction();
+                      }
+                      if (e.key === "Escape") setDuplicateModal(null);
+                    }}
+                  />
+                </div>
+                {isDuplicateZTaken && (
+                  <p className="text-[9px] font-mono text-amber-600 mt-1 flex items-center gap-1">
+                    ⚠️ A layer at Z:{parseFloat(duplicateModal.newZ).toFixed(4)} already exists. Choose a unique Z height.
+                  </p>
+                )}
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 text-[10px]">
+              <button
+                onClick={() => setDuplicateModal(null)}
+                className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 rounded font-mono uppercase font-bold transition-all cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={confirmDuplicateAction}
+                disabled={isDuplicateZTaken || isNaN(parseFloat(duplicateModal.newZ))}
+                className="px-2.5 py-1.5 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 disabled:cursor-not-allowed text-white rounded border border-indigo-700 font-mono uppercase font-bold shadow-sm transition-all cursor-pointer flex items-center gap-1.5"
+                id="confirm-duplicate-segment-btn"
+              >
+                <Copy className="w-3 h-3" />
+                <span>Duplicate</span>
               </button>
             </div>
           </div>

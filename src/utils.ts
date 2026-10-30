@@ -164,6 +164,112 @@ export function splitToolpathByZ(points: ToolpathPoint[]): ToolpathSegment[] {
 }
 
 /**
+ * Inverts the toolpath direction of a list of points from start to finish.
+ * Reverses the coordinate sequence and intelligently updates Start/End dispense types.
+ */
+export function reverseToolpathPoints(points: ToolpathPoint[]): ToolpathPoint[] {
+  if (points.length <= 1) return [...points];
+
+  const hadStartAtBeginning = /^start of line dispense$/i.test(points[0].type.trim());
+  const hadEndAtFinish = /^end of line dispense$/i.test(points[points.length - 1].type.trim());
+
+  // Clone and reverse the points sequence
+  const reversed = [...points].reverse();
+
+  const transformed = reversed.map((pt, idx) => {
+    let nextType = pt.type;
+    const trimmed = pt.type.trim();
+
+    // Swap Start and End dispense types
+    if (/^start of line dispense$/i.test(trimmed)) {
+      nextType = "End of Line Dispense";
+    } else if (/^end of line dispense$/i.test(trimmed)) {
+      nextType = "Start of Line Dispense";
+    }
+
+    return {
+      ...pt,
+      type: nextType,
+      originalIndex: idx
+    };
+  });
+
+  // If the original path started with a Start command, ensure the new starting point has it
+  if (hadStartAtBeginning && !/^start of line dispense$/i.test(transformed[0].type.trim())) {
+    transformed[0].type = "Start of Line Dispense";
+  }
+
+  // If the original path had a defined Start or End command, ensure the new terminating point has End
+  if ((hadStartAtBeginning || hadEndAtFinish) && !/^end of line dispense$/i.test(transformed[transformed.length - 1].type.trim())) {
+    transformed[transformed.length - 1].type = "End of Line Dispense";
+  }
+
+  return transformed;
+}
+
+/**
+ * Reorders layer points by placing sequenced points starting at startNumber (1-based index),
+ * keeping points before startNumber intact, then placing sequenced points in their hovered order,
+ * followed by remaining unsequenced points.
+ * Also intelligently standardizes Start/End of Line Dispense types.
+ */
+export function reorderLayerPoints(
+  currentPoints: ToolpathPoint[],
+  sequencedIds: string[],
+  startNumber: number = 1
+): ToolpathPoint[] {
+  if (currentPoints.length <= 1 || sequencedIds.length === 0) return [...currentPoints];
+
+  const startIndex = Math.max(0, Math.min(startNumber - 1, currentPoints.length - 1));
+  const sequencedIdSet = new Set(sequencedIds);
+  const pointMap = new Map(currentPoints.map((p) => [p.id, p]));
+
+  // 1. Prefix points: points before startIndex that are NOT in sequencedIds
+  const prefixPoints = currentPoints
+    .slice(0, startIndex)
+    .filter((p) => !sequencedIdSet.has(p.id));
+
+  // 2. The sequenced points in their hovered order
+  const orderedSequencedPoints = sequencedIds
+    .map((id) => pointMap.get(id))
+    .filter((p): p is ToolpathPoint => Boolean(p));
+
+  // 3. Remaining unsequenced points (excluding prefix and sequenced)
+  const prefixIdSet = new Set(prefixPoints.map((p) => p.id));
+  const remainingPoints = currentPoints.filter(
+    (p) => !prefixIdSet.has(p.id) && !sequencedIdSet.has(p.id)
+  );
+
+  const reordered = [...prefixPoints, ...orderedSequencedPoints, ...remainingPoints];
+
+  // Preserve Start / End of Line Dispense intent
+  const hadStart = currentPoints.some((p) => /^start of line dispense$/i.test(p.type.trim()));
+  const hadEnd = currentPoints.some((p) => /^end of line dispense$/i.test(p.type.trim()));
+
+  return reordered.map((pt, idx) => {
+    let nextType = pt.type;
+    const isFirst = idx === 0;
+    const isLast = idx === reordered.length - 1;
+
+    if (hadStart && isFirst) {
+      nextType = "Start of Line Dispense";
+    } else if (hadEnd && isLast) {
+      nextType = "End of Line Dispense";
+    } else if (/^start of line dispense$/i.test(pt.type.trim()) && !isFirst) {
+      nextType = "Line Passing";
+    } else if (/^end of line dispense$/i.test(pt.type.trim()) && !isLast) {
+      nextType = "Line Passing";
+    }
+
+    return {
+      ...pt,
+      type: nextType,
+      originalIndex: idx
+    };
+  });
+}
+
+/**
  * Re-collates a list of segments into a flat array of ToolpathPoints,
  * preserving or rebuilding originalIndexes.
  */

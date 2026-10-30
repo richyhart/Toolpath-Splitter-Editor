@@ -5,7 +5,7 @@
 
 import React, { useRef, useState, useMemo, useEffect } from "react";
 import { ToolpathPoint, GridSettings } from "../types";
-import { ZoomIn, ZoomOut, Compass, Info, RefreshCw, Grid, Ruler } from "lucide-react";
+import { ZoomIn, ZoomOut, Compass, Info, RefreshCw, Grid, Ruler, ListOrdered, RotateCcw, Check, MousePointerClick } from "lucide-react";
 
 interface InteractiveGridProps {
   points: ToolpathPoint[];
@@ -19,6 +19,18 @@ interface InteractiveGridProps {
   activeSegmentId?: string;
   onDragStart?: () => void;
   fileName?: string;
+  allPoints?: ToolpathPoint[];
+  fitViewTrigger?: number;
+  onInvertToolpath?: (segmentId: string) => void;
+  isHoverReorderActive?: boolean;
+  onToggleHoverReorder?: () => void;
+  hoverReorderStartNum?: number;
+  onUpdateHoverReorderStartNum?: (num: number) => void;
+  hoverSequencedIds?: string[];
+  onHoverReorderPoint?: (pointId: string) => void;
+  onResetHoverSequence?: () => void;
+  hoverReorderRequireClick?: boolean;
+  onToggleHoverReorderRequireClick?: () => void;
 }
 
 export default function InteractiveGrid({
@@ -32,7 +44,19 @@ export default function InteractiveGrid({
   highlightColor = "#809fff",
   activeSegmentId,
   onDragStart,
-  fileName
+  fileName,
+  allPoints,
+  fitViewTrigger,
+  onInvertToolpath,
+  isHoverReorderActive = false,
+  onToggleHoverReorder,
+  hoverReorderStartNum = 1,
+  onUpdateHoverReorderStartNum,
+  hoverSequencedIds = [],
+  onHoverReorderPoint,
+  onResetHoverSequence,
+  hoverReorderRequireClick = false,
+  onToggleHoverReorderRequireClick,
 }: InteractiveGridProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
@@ -118,9 +142,11 @@ export default function InteractiveGrid({
     };
   }, [isResizing]);
 
-  // Monitor size of parent block to be responsive
+  // Monitor size of parent block to be responsive using ResizeObserver
   useEffect(() => {
-    if (!containerRef.current) return;
+    const container = containerRef.current;
+    if (!container) return;
+
     const updateSize = () => {
       if (customSize) {
         setDimensions({
@@ -128,18 +154,36 @@ export default function InteractiveGrid({
           height: customSize.height,
         });
       } else {
-        const w = containerRef.current?.clientWidth || 600;
-        const h = containerRef.current?.clientHeight || 600;
-        const squareSize = Math.min(w, h);
+        const rect = container.getBoundingClientRect();
+        const w = rect.width || container.clientWidth || 600;
+        const h = rect.height || container.clientHeight || 600;
+        const squareSize = Math.max(300, Math.min(w, h));
         setDimensions({
           width: squareSize,
           height: squareSize,
         });
       }
     };
+
     updateSize();
-    window.addEventListener("resize", updateSize);
-    return () => window.removeEventListener("resize", updateSize);
+
+    let resizeObserver: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== "undefined") {
+      resizeObserver = new ResizeObserver(() => {
+        updateSize();
+      });
+      resizeObserver.observe(container);
+    } else {
+      window.addEventListener("resize", updateSize);
+    }
+
+    return () => {
+      if (resizeObserver) {
+        resizeObserver.disconnect();
+      } else {
+        window.removeEventListener("resize", updateSize);
+      }
+    };
   }, [customSize]);
 
   // Update control for scroll wheel + CTRL key zoom, bypassing passive listener limits to prevent browser-wide zoom scaling
@@ -185,13 +229,19 @@ export default function InteractiveGrid({
     };
   }, [setGridSettings, swapXY]);
 
+  // Target points to calculate viewport fit bounding envelope (entire toolpath if provided, else active segment points)
+  const targetFitPoints = useMemo(() => {
+    if (allPoints && allPoints.length > 0) return allPoints;
+    return points;
+  }, [allPoints, points]);
+
   // Compute machine coordinate bounds to automatically scale and frame the view
   const bounds = useMemo(() => {
-    if (points.length === 0) {
+    if (targetFitPoints.length === 0) {
       return { minX: 0, maxX: 100, minY: 0, maxY: 100, width: 100, height: 100, centerX: 50, centerY: 50 };
     }
-    const xs = points.map((p) => p.x);
-    const ys = points.map((p) => p.y);
+    const xs = targetFitPoints.map((p) => p.x);
+    const ys = targetFitPoints.map((p) => p.y);
     const minX = Math.min(...xs);
     const maxX = Math.max(...xs);
     const minY = Math.min(...ys);
@@ -209,42 +259,72 @@ export default function InteractiveGrid({
       centerX: minX + width / 2,
       centerY: minY + height / 2,
     };
-  }, [points]);
+  }, [targetFitPoints]);
 
   // Handle auto-fit of toolpath inside viewport
   const handleAutoFit = () => {
-    if (points.length === 0) {
+    if (targetFitPoints.length === 0) {
       setGridSettings((prev) => ({ ...prev, zoom: 4.5, offsetX: 50, offsetY: 50 }));
       return;
     }
 
-    const margin = 0.25;
+    const margin = 0.22; // 22% framing padding
     const usableW = dimensions.width * (1 - margin);
     const usableH = dimensions.height * (1 - margin);
 
     const currentBoundW = swapXY ? bounds.height : bounds.width;
     const currentBoundH = swapXY ? bounds.width : bounds.height;
 
-    const scaleX = usableH / currentBoundH;
-    const scaleY = usableW / currentBoundW;
-    const baseZoom = Math.min(scaleX, scaleY, 15.0);
+    const scaleX = usableW / currentBoundW;
+    const scaleY = usableH / currentBoundH;
+    const baseZoom = Math.min(scaleX, scaleY, 60.0);
 
     const cx = swapXY ? bounds.centerY : bounds.centerX;
     const cy = swapXY ? bounds.centerX : bounds.centerY;
 
+    const finalZoom = Math.max(baseZoom > 0.05 ? baseZoom : 4.0, 0.1);
+
     setGridSettings((prev) => ({
       ...prev,
-      zoom: baseZoom > 0.1 ? baseZoom : 4.0,
-      offsetX: dimensions.width / 2 - cx * (baseZoom > 0.1 ? baseZoom : 4.0),
-      offsetY: dimensions.height / 2 + cy * (baseZoom > 0.1 ? baseZoom : 4.0),
+      zoom: finalZoom,
+      offsetX: dimensions.width / 2 - cx * finalZoom,
+      offsetY: dimensions.height / 2 + cy * finalZoom,
     }));
   };
 
-  // Run auto fit ONLY on initial mount, window resize, coordinate flip/swap, or when a completely new file is loaded
+  // Track pending auto-fit (at start and every time a new file is uploaded)
+  const [shouldAutoFit, setShouldAutoFit] = useState<boolean>(true);
+
+  // Trigger auto-fit when fitViewTrigger changes or fileName changes
   useEffect(() => {
-    handleAutoFit();
+    setShouldAutoFit(true);
+  }, [fitViewTrigger, fileName]);
+
+  // Execute auto-fit as soon as target points and viewport dimensions are ready
+  useEffect(() => {
+    if (shouldAutoFit && targetFitPoints.length > 0 && dimensions.width > 0 && dimensions.height > 0) {
+      handleAutoFit();
+      setShouldAutoFit(false);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fileName, dimensions.width, dimensions.height, swapXY]);
+  }, [shouldAutoFit, targetFitPoints, dimensions.width, dimensions.height, swapXY]);
+
+  // Handle ENTER key to complete/finish hover reordering mode
+  useEffect(() => {
+    if (!isHoverReorderActive) return;
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        onToggleHoverReorder?.();
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [isHoverReorderActive, onToggleHoverReorder]);
 
   // Map CNC coordinates to screen coordinates
   const project = (x: number, y: number) => {
@@ -469,7 +549,7 @@ export default function InteractiveGrid({
 
       {/* Overlays top-left: Controller buttons with strict event separation */}
       <div 
-        className="absolute top-4 left-4 z-30 flex gap-2 flex-wrap bg-white/90 backdrop-blur-md p-1.5 rounded border border-slate-300 shadow-md"
+        className="absolute top-4 left-4 z-30 flex items-center gap-2 flex-wrap bg-white/90 backdrop-blur-md px-2.5 py-1.5 rounded border border-slate-300 shadow-md"
         onMouseDown={(e) => e.stopPropagation()}
         onClick={(e) => e.stopPropagation()}
       >
@@ -515,6 +595,35 @@ export default function InteractiveGrid({
           <RefreshCw className={`w-3.5 h-3.5 transition-transform duration-300 ${swapXY ? "text-white rotate-180" : "text-indigo-600"}`} />
           <span>FLIP X ⇋ Y</span>
         </button>
+
+        {/* Dynamic X-Y Axis Orientation Indicator in Top Bar */}
+        <div 
+          className="bg-slate-100 border border-slate-300 rounded px-2 flex items-center gap-2 select-none font-mono text-xs shadow-2xs"
+          style={{ height: "26px" }}
+          id="axis-orientation-indicator"
+          title={`Axis Orientation: ${swapXY ? "Horizontal = Y axis, Vertical = X axis" : "Horizontal = X axis, Vertical = Y axis"}`}
+        >
+          <span className="text-[9px] font-bold text-indigo-700 tracking-wider uppercase">ORIENT:</span>
+          <div className="w-5 h-5 flex items-center justify-center shrink-0">
+            <svg width="20" height="20" viewBox="0 0 24 24" className="overflow-visible">
+              <circle cx="5" cy="19" r="2" fill="#6366f1" />
+              <line x1="5" y1="19" x2="18" y2="19" stroke="#475569" strokeWidth="2" strokeLinecap="round" />
+              <polygon points="18,17 22,19 18,21" fill="#475569" />
+              <line x1="5" y1="19" x2="5" y2="6" stroke="#475569" strokeWidth="2" strokeLinecap="round" />
+              <polygon points="3,6 5,2 7,6" fill="#475569" />
+              <text x="22" y="24" fill="#4f46e5" fontSize="7" fontWeight="bold" fontFamily="monospace" textAnchor="middle">
+                {swapXY ? "Y" : "X"}
+              </text>
+              <text x="11" y="6" fill="#2563eb" fontSize="7" fontWeight="bold" fontFamily="monospace" textAnchor="middle">
+                {swapXY ? "X" : "Y"}
+              </text>
+            </svg>
+          </div>
+          <span className="text-[10px] font-bold text-slate-700">
+            {swapXY ? "Y ➔ HORIZ" : "X ➔ HORIZ"}
+          </span>
+        </div>
+
         <button
           onClick={() => setGridSettings((prev) => ({ ...prev, showGrid: !prev.showGrid }))}
           className={`p-1 px-2.5 border rounded transition-all font-mono text-xs font-semibold flex items-center justify-center gap-1 cursor-pointer ${
@@ -549,38 +658,168 @@ export default function InteractiveGrid({
           <Ruler className={`w-3.5 h-3.5 ${isMeasuring ? "text-white" : "text-rose-600"}`} />
           <span>MEASURE: {isMeasuring ? "ON" : "OFF"}</span>
         </button>
-      </div>
 
-      {/* Top right Legend panel with pinned live cursor coordinate display */}
-      <div className="absolute top-4 right-4 z-30 flex flex-col items-end gap-2 pointer-events-none select-none">
-        {/* Toolpath Info Card */}
-        <div className="flex items-center gap-3.5 text-[10px] bg-white/95 backdrop-blur-md px-3.5 py-1.5 rounded border border-slate-300 font-mono text-slate-700 shadow-sm">
-          <div className="flex items-center gap-1.5">
-            <span className="w-3.5 h-1 bg-[#809fff] inline-block rounded-sm"></span>
-            <span className="text-[#809fff] uppercase font-bold">TOOLPATH</span>
-          </div>
-          <div className="border-l border-slate-300 pl-3 text-slate-500 font-semibold">
-            S:{gridSettings.gridSize}mm
-          </div>
-        </div>
-
-        {/* Pinned Live Cursor Coordinates HUD */}
+        {/* Live Cursor Coordinates Panel */}
+        <div className="w-px h-5 bg-slate-200 self-center mx-0.5"></div>
         <div 
-          className="bg-slate-900/90 text-[10px] font-mono text-slate-100 px-2.5 py-1.5 rounded-md shadow-md flex items-center gap-1.5 border border-slate-700/50 backdrop-blur-sm"
+          className="bg-slate-100 hover:bg-slate-200/60 transition-colors border border-slate-300 text-slate-800 text-[10px] font-mono px-2.5 rounded shadow-2xs flex items-center gap-1.5 select-none"
+          style={{ height: "26px" }}
           id="pinned-coords-indicator"
+          title="Live machine coordinate at mouse cursor"
         >
-          <span className="text-indigo-400 font-bold uppercase tracking-wider text-[8px]">Live Cursor:</span>
+          <span className="text-indigo-700 font-bold uppercase tracking-wider text-[8px]">Live:</span>
           {hoveredGridCoords ? (
-            <>
-              <span>X: {hoveredGridCoords.x.toFixed(3)}</span>
-              <span className="text-slate-500">|</span>
-              <span>Y: {hoveredGridCoords.y.toFixed(3)}</span>
-            </>
+            <span className="flex items-center gap-1.5 font-semibold text-[10px]">
+              <span className="text-slate-700">X: <span className="text-emerald-600 font-bold">{hoveredGridCoords.x.toFixed(3)}</span></span>
+              <span className="text-slate-300">|</span>
+              <span className="text-slate-700">Y: <span className="text-emerald-600 font-bold">{hoveredGridCoords.y.toFixed(3)}</span></span>
+            </span>
           ) : (
-            <span className="text-slate-400 italic">Grid: Hover to track</span>
+            <span className="text-slate-400 italic text-[9px]">Hover canvas</span>
           )}
         </div>
       </div>
+
+      {/* Hover Reorder HUD Controls Banner */}
+      {isHoverReorderActive && (
+        <div 
+          className="absolute top-16 left-4 right-4 z-30 flex items-center justify-between gap-3 bg-white/95 backdrop-blur-md px-3.5 py-2 rounded-lg border-2 border-violet-500 shadow-xl text-slate-800 font-mono text-xs animate-fadeIn flex-wrap pointer-events-auto"
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={(e) => e.stopPropagation()}
+          id="hover-reorder-banner"
+        >
+          <div className="flex items-center gap-2">
+            <span className="flex h-2.5 w-2.5 relative">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-violet-400 opacity-75"></span>
+              <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-violet-600"></span>
+            </span>
+            <div className="font-bold text-violet-700 uppercase tracking-tight text-[11px] flex items-center gap-1">
+              <ListOrdered className="w-4 h-4 text-violet-600" />
+              <span>Hover Sequencing Active</span>
+            </div>
+            <span className="text-[10px] text-slate-500 hidden sm:inline">
+              {hoverReorderRequireClick
+                ? "(Click points sequentially while hovering to sequence)"
+                : "(Hover over points sequentially to order toolpath)"}
+            </span>
+          </div>
+
+          <div className="flex items-center gap-3 flex-wrap">
+            {/* Mode: Require Click vs Hover Only toggle button */}
+            {onToggleHoverReorderRequireClick && (
+              <button
+                type="button"
+                onClick={onToggleHoverReorderRequireClick}
+                className={`px-2 py-1 rounded border text-[10px] font-mono font-bold flex items-center gap-1.5 transition cursor-pointer shadow-2xs select-none ${
+                  hoverReorderRequireClick
+                    ? "bg-violet-600 text-white border-violet-700 hover:bg-violet-700 shadow-xs"
+                    : "bg-slate-100 hover:bg-slate-200 text-slate-700 border-slate-300"
+                }`}
+                id="hud-toggle-require-click-btn"
+                title={
+                  hoverReorderRequireClick
+                    ? "Mouse click is required on top of hovering to register toolpath point. (Click to switch to Hover Only)"
+                    : "Points register automatically on hover. (Click to require mouse click)"
+                }
+              >
+                <MousePointerClick className={`w-3.5 h-3.5 ${hoverReorderRequireClick ? "text-white" : "text-violet-600"}`} />
+                <span>{hoverReorderRequireClick ? "Click Required: ON" : "Click Required: OFF"}</span>
+              </button>
+            )}
+
+            {/* Start Toolpath Number Input */}
+            <div className="flex items-center gap-1.5 bg-slate-100 px-2 py-0.5 rounded border border-slate-300 shadow-2xs">
+              <label className="text-[10px] text-slate-600 uppercase font-bold" htmlFor="hover-start-num-input">
+                Start #:
+              </label>
+              <div className="flex items-center">
+                <button
+                  type="button"
+                  onClick={() => onUpdateHoverReorderStartNum?.(Math.max(1, hoverReorderStartNum - 1))}
+                  className="w-5 h-5 flex items-center justify-center bg-white hover:bg-slate-200 text-slate-700 rounded-l border border-slate-300 text-xs font-bold cursor-pointer"
+                  title="Decrease start number"
+                  id="hover-start-num-decrease-btn"
+                >
+                  -
+                </button>
+                <input
+                  id="hover-start-num-input"
+                  type="number"
+                  min={1}
+                  max={Math.max(1, points.length)}
+                  value={hoverReorderStartNum}
+                  onChange={(e) => {
+                    const val = parseInt(e.target.value, 10);
+                    if (!isNaN(val)) {
+                      onUpdateHoverReorderStartNum?.(Math.max(1, Math.min(val, Math.max(1, points.length))));
+                    }
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.currentTarget.blur();
+                      onToggleHoverReorder?.();
+                    }
+                  }}
+                  className="w-10 h-5 text-center bg-white border-y border-slate-300 text-slate-900 font-bold text-xs focus:outline-none focus:border-violet-500 font-mono"
+                />
+                <button
+                  type="button"
+                  onClick={() => onUpdateHoverReorderStartNum?.(Math.min(Math.max(1, points.length), hoverReorderStartNum + 1))}
+                  className="w-5 h-5 flex items-center justify-center bg-white hover:bg-slate-200 text-slate-700 rounded-r border border-slate-300 text-xs font-bold cursor-pointer"
+                  title="Increase start number"
+                  id="hover-start-num-increase-btn"
+                >
+                  +
+                </button>
+              </div>
+            </div>
+
+            {/* Next assigned number badge */}
+            <div className="flex items-center gap-1.5">
+              <span className="text-[10px] text-slate-500 uppercase font-bold">
+                {hoverReorderRequireClick ? "Next Click:" : "Next Hover:"}
+              </span>
+              <span className="px-2 py-0.5 bg-violet-600 text-white font-extrabold rounded text-[11px] shadow-xs" id="next-seq-badge">
+                #{Math.min(points.length, (hoverReorderStartNum - 1) + hoverSequencedIds.length + 1)}
+              </span>
+            </div>
+
+            {/* Progress counter */}
+            <div className="flex items-center gap-1 text-[10px] text-slate-600">
+              <span className="font-semibold">Sequenced:</span>
+              <span className="font-bold text-violet-700">{hoverSequencedIds.length}</span>
+              <span className="text-slate-400">/</span>
+              <span className="font-bold text-slate-700">{points.length}</span>
+            </div>
+
+            {/* Reset / Done buttons */}
+            <div className="flex items-center gap-1.5 pl-1 border-l border-slate-200">
+              <button
+                type="button"
+                onClick={onResetHoverSequence}
+                disabled={hoverSequencedIds.length === 0}
+                className="px-2 py-1 bg-slate-100 hover:bg-slate-200 disabled:opacity-40 disabled:cursor-not-allowed border border-slate-300 text-slate-700 rounded text-[10px] font-semibold flex items-center gap-1 cursor-pointer transition shadow-2xs"
+                title="Reset current hover pass and start sequencing again from Start #"
+                id="reset-hover-sequence-btn"
+              >
+                <RotateCcw className="w-3 h-3 text-slate-600" />
+                <span>Restart</span>
+              </button>
+              <button
+                type="button"
+                onClick={onToggleHoverReorder}
+                className="px-2.5 py-1 bg-violet-600 hover:bg-violet-700 text-white rounded text-[10px] font-bold flex items-center gap-1.5 cursor-pointer transition shadow-xs"
+                title="Finish and close hover reorder mode (or press Enter or R key)"
+                id="done-hover-sequence-btn"
+              >
+                <Check className="w-3 h-3" />
+                <span>Done</span>
+                <kbd className="bg-violet-800/80 px-1 py-0.2 rounded text-[9px] font-mono text-violet-200">↵ Enter / R</kbd>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Coordinates status console */}
       <div className="absolute bottom-4 left-4 z-30 text-[9px] font-mono bg-white/95 text-slate-800 p-3 rounded border border-slate-300 shadow-lg space-y-1 max-w-[280px] pointer-events-none select-none">
@@ -734,6 +973,10 @@ export default function InteractiveGrid({
             {points.map((pt, index) => {
               const { x, y } = project(pt.x, pt.y);
               const isSelected = pt.id === selectedPointId;
+              const isHovered = hoveredPoint?.id === pt.id;
+              const seqIndex = hoverSequencedIds.indexOf(pt.id);
+              const isSequenced = seqIndex !== -1;
+              const assignedOrderNum = isSequenced ? hoverReorderStartNum + seqIndex : null;
 
               return (
                 <g key={`node-group-${pt.id}`}>
@@ -741,20 +984,42 @@ export default function InteractiveGrid({
                   <circle
                     cx={x}
                     cy={y}
-                    r={isSelected ? 11 : 8}
+                    r={isSelected ? 11 : isHoverReorderActive ? 12 : 8}
                     fill="transparent"
-                    className={`point-handle hover:fill-indigo-500/10 transition-[fill] duration-150 ${isMeasuring ? "cursor-crosshair" : "cursor-move"}`}
+                    className={`point-handle transition-[fill] duration-150 ${
+                      isMeasuring
+                        ? "cursor-crosshair hover:fill-rose-500/10"
+                        : isHoverReorderActive
+                        ? "cursor-pointer hover:fill-violet-500/25"
+                        : "cursor-move hover:fill-indigo-500/10"
+                    }`}
                     onMouseDown={(e) => {
                       e.stopPropagation();
                       if (isMeasuring) {
                         handleMeasureSelect(pt);
+                      } else if (isHoverReorderActive) {
+                        // When hover reordering is active, clicking directly registers the point
+                        if (onHoverReorderPoint) {
+                          onHoverReorderPoint(pt.id);
+                        }
                       } else {
                         onSelectPoint(pt.id);
                         setDraggingPointId(pt.id);
                         if (onDragStart) onDragStart();
                       }
                     }}
-                    onMouseEnter={() => setHoveredPoint(pt)}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (isHoverReorderActive && onHoverReorderPoint) {
+                        onHoverReorderPoint(pt.id);
+                      }
+                    }}
+                    onMouseEnter={() => {
+                      setHoveredPoint(pt);
+                      if (isHoverReorderActive && !hoverReorderRequireClick && onHoverReorderPoint) {
+                        onHoverReorderPoint(pt.id);
+                      }
+                    }}
                     onMouseLeave={() => setHoveredPoint(null)}
                   />
 
@@ -766,19 +1031,21 @@ export default function InteractiveGrid({
                     fill={
                       isSelected
                         ? "#ea580c" // Selected Orange
+                        : isSequenced
+                        ? "#7c3aed" // Sequenced Violet
                         : index === 0
                         ? "#10b981" // Start node color of Z segment (Green)
                         : index === points.length - 1
                         ? "#ef4444" // End node color of Z segment (Red)
                         : "#2563eb" // Intermediate node color of Z segment (Royal Blue)
                     }
-                    stroke={isSelected ? "#ffffff" : "rgba(0, 0, 0, 0.25)"}
-                    strokeWidth={isSelected ? 1.5 : 0.75}
+                    stroke={isSelected ? "#ffffff" : isSequenced ? "#c4b5fd" : "rgba(0, 0, 0, 0.25)"}
+                    strokeWidth={isSelected ? 1.5 : isSequenced ? 1.25 : 0.75}
                     className="pointer-events-none"
                   />
 
                   {/* Start / End flags */}
-                  {index === 0 && (
+                  {!isHoverReorderActive && index === 0 && (
                     <g transform={`translate(${x - 14}, ${y - 14})`} className="pointer-events-none opacity-90">
                       <rect width="28" height="10" rx="2" fill="#10b981" />
                       <text x="14" y="8" fill="white" fontSize="6.5" fontWeight="bold" textAnchor="middle" fontFamily="sans-serif">
@@ -787,7 +1054,7 @@ export default function InteractiveGrid({
                     </g>
                   )}
 
-                  {index === points.length - 1 && (
+                  {!isHoverReorderActive && index === points.length - 1 && (
                     <g transform={`translate(${x - 14}, ${y - 14})`} className="pointer-events-none opacity-90">
                       <rect width="28" height="10" rx="2" fill="#ef4444" />
                       <text x="14" y="8" fill="white" fontSize="6.5" fontWeight="bold" textAnchor="middle" fontFamily="sans-serif">
@@ -796,8 +1063,80 @@ export default function InteractiveGrid({
                     </g>
                   )}
 
+                  {/* Hover Reordering visual feedback */}
+                  {isHoverReorderActive && (
+                    <>
+                      {isSequenced ? (
+                        <g transform={`translate(${x}, ${y - 14})`} className="pointer-events-none select-none">
+                          <rect
+                            x={-13}
+                            y={-8}
+                            width={26}
+                            height={14}
+                            rx={3}
+                            fill="#7c3aed"
+                            stroke="#ffffff"
+                            strokeWidth={1.5}
+                          />
+                          <text
+                            x={0}
+                            y={2.5}
+                            fill="#ffffff"
+                            fontSize="8.5"
+                            fontWeight="bold"
+                            fontFamily="monospace"
+                            textAnchor="middle"
+                          >
+                            #{assignedOrderNum}
+                          </text>
+                        </g>
+                      ) : (
+                        <>
+                          {/* Pulsing guide ring indicating point is ready to be hovered */}
+                          <circle
+                            cx={x}
+                            cy={y}
+                            r={7}
+                            fill="none"
+                            stroke="#8b5cf6"
+                            strokeWidth={1.5}
+                            strokeDasharray="2 2"
+                            className="pointer-events-none animate-pulse"
+                          />
+                          {isHovered && (
+                            <g transform={`translate(${x}, ${y - 14})`} className="pointer-events-none select-none">
+                              <rect
+                                x={hoverReorderRequireClick ? -28 : -16}
+                                y={-8}
+                                width={hoverReorderRequireClick ? 56 : 32}
+                                height={14}
+                                rx={3}
+                                fill={hoverReorderRequireClick ? "#7c3aed" : "#4f46e5"}
+                                stroke="#ffffff"
+                                strokeWidth={1}
+                              />
+                              <text
+                                x={0}
+                                y={2.5}
+                                fill="#ffffff"
+                                fontSize="8"
+                                fontWeight="bold"
+                                fontFamily="monospace"
+                                textAnchor="middle"
+                              >
+                                {hoverReorderRequireClick
+                                  ? `Click ➔ #${Math.min(points.length, (hoverReorderStartNum - 1) + hoverSequencedIds.length + 1)}`
+                                  : `➔ #${Math.min(points.length, (hoverReorderStartNum - 1) + hoverSequencedIds.length + 1)}`}
+                              </text>
+                            </g>
+                          )}
+                        </>
+                      )}
+                    </>
+                  )}
+
                   {/* Optional Node Dot sequence numbers */}
-                  {gridSettings.showNodeNumbers && (
+                  {gridSettings.showNodeNumbers && !isHoverReorderActive && (
                     <text
                       x={x + 7}
                       y={y - 8}
@@ -1097,61 +1436,7 @@ export default function InteractiveGrid({
         </div>
       )}
 
-      {/* Dynamic X-Y Axis Orientation HUD Reference */}
-      <div 
-        className="absolute bottom-4 right-4 z-30 bg-white/95 backdrop-blur-md px-3.5 py-2.5 rounded-md border border-slate-300 shadow-lg flex flex-col items-center gap-1.5 pointer-events-none select-none w-28"
-        id="axis-orientation-indicator"
-      >
-        <div className="font-mono text-[8.5px] font-bold text-indigo-700 tracking-wider uppercase">
-          ORIENTATION
-        </div>
-        
-        {/* Compact visual axis compass */}
-        <div className="relative w-12 h-12 bg-slate-50 border border-slate-200/60 rounded flex items-center justify-center">
-          <svg width="40" height="40" viewBox="0 0 40 40" className="overflow-visible">
-            {/* Origin node center */}
-            <circle cx="10" cy="30" r="2.5" fill="#6366f1" />
-            
-            {/* Horizontal Axis arrow direction */}
-            <line x1="10" y1="30" x2="28" y2="30" stroke="#475569" strokeWidth="1.75" strokeLinecap="round" />
-            <polygon points="28,27.5 33,30 28,32.5" fill="#475569" />
-            
-            {/* Vertical Axis arrow direction */}
-            <line x1="10" y1="30" x2="10" y2="12" stroke="#475569" strokeWidth="1.75" strokeLinecap="round" />
-            <polygon points="7.5,12 10,7 12.5,12" fill="#475569" />
-            
-            {/* Horizontal Axis label (swaps if axis is swapped) */}
-            <text 
-              x="34" 
-              y="38" 
-              fill="#4f46e5" 
-              fontSize="8" 
-              fontWeight="bold" 
-              fontFamily="monospace" 
-              textAnchor="middle"
-            >
-              {swapXY ? "Y" : "X"}
-            </text>
 
-            {/* Vertical Axis label (swaps if axis is swapped) */}
-            <text 
-              x="18" 
-              y="9" 
-              fill="#2563eb" 
-              fontSize="8" 
-              fontWeight="bold" 
-              fontFamily="monospace" 
-              textAnchor="middle"
-            >
-              {swapXY ? "X" : "Y"}
-            </text>
-          </svg>
-        </div>
-        
-        <div className="font-mono text-[8px] text-slate-500 font-bold leading-none tracking-tight">
-          {swapXY ? "Y ➔ HORIZ" : "X ➔ HORIZ"}
-        </div>
-      </div>
 
       {/* Manual Drag Resize Handles (Right edge, Bottom edge, Bottom-right corner) */}
       <div

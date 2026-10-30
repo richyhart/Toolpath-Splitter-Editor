@@ -15,6 +15,7 @@ export interface ToolpathPoint {
 
 export interface ToolpathSegment {
   id: string;
+  name?: string;
   zValue: number;
   points: ToolpathPoint[];
   color: string; // Visually group or styled color

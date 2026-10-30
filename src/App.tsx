@@ -5,12 +5,12 @@
 
 import { useState, useEffect, useMemo } from "react";
 import { ToolpathPoint, GridSettings, ToolpathSegment } from "./types";
-import { generateSampleSpiral, splitToolpathByZ, generateId } from "./utils";
+import { generateSampleSpiral, splitToolpathByZ, generateId, reverseToolpathPoints, reorderLayerPoints } from "./utils";
 import Toolbar from "./components/Toolbar";
 import InteractiveGrid from "./components/InteractiveGrid";
 import SegmentSidebar from "./components/SegmentSidebar";
 import PointListSidebar from "./components/PointListSidebar";
-import { Sliders, Sparkles, Terminal, Cpu } from "lucide-react";
+import { Sliders, ArrowLeftRight, X } from "lucide-react";
 
 export default function App() {
   // Central Coordinate Raw Points Dataset
@@ -18,6 +18,22 @@ export default function App() {
   const [emptySegments, setEmptySegments] = useState<ToolpathSegment[]>([]);
   const [lastSelectedZ, setLastSelectedZ] = useState<number | null>(null);
   const [fileName, setFileName] = useState<string>("helix_spiral_sample.csv");
+  const [fitViewTrigger, setFitViewTrigger] = useState<number>(0);
+  const [notification, setNotification] = useState<{ message: string } | null>(null);
+
+  // Hover Reordering Toolpath State
+  const [isHoverReorderActive, setIsHoverReorderActive] = useState<boolean>(false);
+  const [hoverReorderStartNum, setHoverReorderStartNum] = useState<number>(1);
+  const [hoverSequencedIds, setHoverSequencedIds] = useState<string[]>([]);
+  const [hoverReorderRequireClick, setHoverReorderRequireClick] = useState<boolean>(false);
+
+  useEffect(() => {
+    if (!notification) return;
+    const timer = setTimeout(() => {
+      setNotification(null);
+    }, 4000);
+    return () => clearTimeout(timer);
+  }, [notification]);
 
   // Default offset values for inserting coordinates
   const [insertOffset, setInsertOffset] = useState<{ x: number; y: number }>({ x: 5.0, y: 5.0 });
@@ -33,6 +49,7 @@ export default function App() {
   const [selectedSegmentId, setSelectedSegmentId] = useState<string | null>(null);
   const [selectedPointId, setSelectedPointId] = useState<string | null>(null);
   const [onionSkinSegmentId, setOnionSkinSegmentId] = useState<string | null>(null);
+  const [segmentNames, setSegmentNames] = useState<Record<string, string>>({});
 
   // Global Grid controls - initial grid values
   const [gridSettings, setGridSettings] = useState<GridSettings>({
@@ -77,45 +94,12 @@ export default function App() {
     setSelectedPointId(null);
   };
 
-  // Global Keyboard Shortcuts for Undo (Ctrl+Z / Cmd+Z) and Redo (Ctrl+Y / Cmd+Y / Ctrl+Shift+Z)
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      // Do not trigger undo/redo if typing inside inputs
-      const activeEl = document.activeElement;
-      if (
-        activeEl &&
-        (activeEl.tagName === "INPUT" ||
-          activeEl.tagName === "SELECT" ||
-          activeEl.tagName === "TEXTAREA" ||
-          activeEl.getAttribute("contenteditable") === "true")
-      ) {
-        return;
-      }
-
-      const isMac = navigator.platform.toUpperCase().indexOf("MAC") >= 0;
-      const modifierKey = isMac ? e.metaKey : e.ctrlKey;
-
-      if (modifierKey && e.key.toLowerCase() === "z") {
-        e.preventDefault();
-        if (e.shiftKey) {
-          handleRedo();
-        } else {
-          handleUndo();
-        }
-      } else if (modifierKey && e.key.toLowerCase() === "y") {
-        e.preventDefault();
-        handleRedo();
-      }
-    };
-
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [history, future, rawPoints]);
 
   // Load spiral on mount
   useEffect(() => {
     const sample = generateSampleSpiral();
     setRawPoints(sample);
+    setFitViewTrigger((prev) => prev + 1);
   }, []);
 
   // Compute layers/segments dynamically grouped by sequential Z coordinates
@@ -123,10 +107,20 @@ export default function App() {
     return splitToolpathByZ(rawPoints);
   }, [rawPoints]);
 
-  // Combine real segments with custom empty ones
+  // Combine real segments with custom empty ones and apply custom segment names
   const combinedSegments = useMemo(() => {
-    return [...segments, ...emptySegments];
-  }, [segments, emptySegments]);
+    return [...segments, ...emptySegments].map((seg, idx) => {
+      const firstPtId = seg.points.length > 0 ? seg.points[0].id : null;
+      const customName =
+        segmentNames[seg.id] ||
+        (firstPtId ? segmentNames[firstPtId] : undefined) ||
+        seg.name;
+      return {
+        ...seg,
+        name: customName || `Segment ${idx + 1}`
+      };
+    });
+  }, [segments, emptySegments, segmentNames]);
 
   // Handle auto-selection of first layer segment after loading
   useEffect(() => {
@@ -141,12 +135,12 @@ export default function App() {
     if (active) {
       setLastSelectedZ(active.zValue);
     } else if (lastSelectedZ !== null) {
-      const matchingReal = segments.find((s) => Math.abs(s.zValue - lastSelectedZ) < 0.0001);
-      if (matchingReal) {
-        setSelectedSegmentId(matchingReal.id);
+      const matching = combinedSegments.find((s) => Math.abs(s.zValue - lastSelectedZ) < 0.0001);
+      if (matching) {
+        setSelectedSegmentId(matching.id);
       }
     }
-  }, [selectedSegmentId, combinedSegments, lastSelectedZ, segments]);
+  }, [selectedSegmentId, combinedSegments, lastSelectedZ]);
 
   // Find currently active segment
   const activeSegment = useMemo(() => {
@@ -262,14 +256,19 @@ export default function App() {
     setRawPoints(points);
     setFileName(filename);
     setEmptySegments([]);
+    setSegmentNames({});
     setLastSelectedZ(null);
     setSelectedSegmentId(null);
     setSelectedPointId(null);
+    setIsHoverReorderActive(false);
+    setHoverSequencedIds([]);
+    setFitViewTrigger((prev) => prev + 1);
   };
 
   const handleSelectSegment = (id: string | null) => {
     setSelectedSegmentId(id);
     setSelectedPointId(null);
+    setHoverSequencedIds([]);
   };
 
   const handleAddEmptySegment = (zValue: number) => {
@@ -437,6 +436,236 @@ export default function App() {
       setSelectedSegmentId(null);
       setSelectedPointId(null);
     }
+
+    // Clean up cached custom names
+    setSegmentNames((prev) => {
+      const next = { ...prev };
+      segmentIds.forEach((id) => delete next[id]);
+      return next;
+    });
+  };
+
+  const handleRenameSegment = (segmentId: string, newName: string) => {
+    const trimmed = newName.trim();
+    if (!trimmed) return;
+    pushToHistory();
+
+    const seg = combinedSegments.find((s) => s.id === segmentId);
+    const firstPtId = seg && seg.points.length > 0 ? seg.points[0].id : null;
+
+    setSegmentNames((prev) => {
+      const next = { ...prev, [segmentId]: trimmed };
+      if (firstPtId) {
+        next[firstPtId] = trimmed;
+      }
+      return next;
+    });
+
+    setEmptySegments((prev) =>
+      prev.map((s) => (s.id === segmentId ? { ...s, name: trimmed } : s))
+    );
+  };
+
+  const handleDuplicateSegment = (sourceSegmentId: string, newZ: number, newName?: string) => {
+    pushToHistory();
+
+    const sourceSeg = combinedSegments.find((s) => s.id === sourceSegmentId);
+    if (!sourceSeg) return;
+
+    const resolvedName = newName?.trim() || `${sourceSeg.name || "Segment"} (Copy)`;
+
+    if (sourceSeg.points.length === 0) {
+      const newEmptyId = `empty-segment-${generateId()}`;
+      const newEmptySeg: ToolpathSegment = {
+        id: newEmptyId,
+        name: resolvedName,
+        zValue: newZ,
+        points: [],
+        color: "#a855f7"
+      };
+      setEmptySegments((prev) => [...prev, newEmptySeg]);
+      setSegmentNames((prev) => ({ ...prev, [newEmptyId]: resolvedName }));
+      setSelectedSegmentId(newEmptyId);
+      setSelectedPointId(null);
+      return;
+    }
+
+    const clonedPoints: ToolpathPoint[] = sourceSeg.points.map((pt, i) => ({
+      id: generateId(),
+      originalIndex: rawPoints.length + i,
+      type: pt.type,
+      x: pt.x,
+      y: pt.y,
+      z: newZ,
+      speed: pt.speed
+    }));
+
+    const firstClonedId = clonedPoints[0].id;
+    setSegmentNames((prev) => ({
+      ...prev,
+      [firstClonedId]: resolvedName
+    }));
+
+    setRawPoints((prev) => [...prev, ...clonedPoints]);
+    setLastSelectedZ(newZ);
+    setSelectedSegmentId(null);
+    setSelectedPointId(null);
+  };
+
+  /**
+   * Invert the toolpath direction start-to-finish of a whole layer
+   */
+  const handleInvertSegment = (segmentId: string) => {
+    const targetSeg = combinedSegments.find((s) => s.id === segmentId);
+    if (!targetSeg || targetSeg.points.length <= 1) return;
+
+    pushToHistory();
+
+    const reversedSegmentPoints = reverseToolpathPoints(targetSeg.points);
+    const targetIds = new Set(targetSeg.points.map((p) => p.id));
+
+    // Find all indices of target segment in rawPoints
+    const indices: number[] = [];
+    rawPoints.forEach((p, idx) => {
+      if (targetIds.has(p.id)) {
+        indices.push(idx);
+      }
+    });
+
+    const updated = [...rawPoints];
+    indices.forEach((rawIdx, i) => {
+      updated[rawIdx] = reversedSegmentPoints[i];
+    });
+
+    // Re-index originalIndex for continuous sequence tracking
+    updated.forEach((p, idx) => {
+      p.originalIndex = idx;
+    });
+
+    setRawPoints(updated);
+
+    setNotification({
+      message: `Inverted toolpath direction for ${targetSeg.name || "Layer"} (${targetSeg.points.length} points: Start ⇄ Finish reversed)`
+    });
+  };
+
+  /**
+   * Batch invert multiple selected layers
+   */
+  const handleInvertSegments = (segmentIds: string[]) => {
+    if (segmentIds.length === 0) return;
+    pushToHistory();
+
+    const updated = [...rawPoints];
+    let totalPointsInverted = 0;
+
+    segmentIds.forEach((segId) => {
+      const targetSeg = combinedSegments.find((s) => s.id === segId);
+      if (!targetSeg || targetSeg.points.length <= 1) return;
+
+      const reversedSegmentPoints = reverseToolpathPoints(targetSeg.points);
+      const targetIds = new Set(targetSeg.points.map((p) => p.id));
+
+      const indices: number[] = [];
+      updated.forEach((p, idx) => {
+        if (targetIds.has(p.id)) {
+          indices.push(idx);
+        }
+      });
+
+      indices.forEach((rawIdx, i) => {
+        updated[rawIdx] = reversedSegmentPoints[i];
+      });
+
+      totalPointsInverted += targetSeg.points.length;
+    });
+
+    updated.forEach((p, idx) => {
+      p.originalIndex = idx;
+    });
+
+    setRawPoints(updated);
+
+    setNotification({
+      message: `Inverted toolpath direction for ${segmentIds.length} layer${segmentIds.length > 1 ? "s" : ""} (${totalPointsInverted} points reversed)`
+    });
+  };
+
+  /**
+   * Hover Reordering handlers
+   */
+  const handleToggleHoverReorder = () => {
+    setIsHoverReorderActive((prev) => {
+      const next = !prev;
+      if (!next) {
+        setHoverSequencedIds([]);
+      } else {
+        setNotification({
+          message: `Hover Reorder activated for ${activeSegment?.name || "Layer"}. Hover points in order to sequence.`
+        });
+      }
+      return next;
+    });
+  };
+
+  const handleResetHoverSequence = () => {
+    setHoverSequencedIds([]);
+    setNotification({
+      message: `Reset hover sequence for ${activeSegment?.name || "Layer"}. Hover points to order starting from #${hoverReorderStartNum}.`
+    });
+  };
+
+  const handleToggleHoverReorderRequireClick = () => {
+    setHoverReorderRequireClick((prev) => {
+      const next = !prev;
+      setNotification({
+        message: next
+          ? `Hover Reorder: Mouse click is now REQUIRED to register each point into toolpath.`
+          : `Hover Reorder: Mouse click disabled (points register automatically on hover).`
+      });
+      return next;
+    });
+  };
+
+  const handleHoverReorderPoint = (pointId: string) => {
+    if (!activeSegment || activeSegment.points.length <= 1) return;
+    if (hoverSequencedIds.includes(pointId)) return;
+
+    pushToHistory();
+
+    const nextSequencedIds = [...hoverSequencedIds, pointId];
+    setHoverSequencedIds(nextSequencedIds);
+
+    const reorderedSegmentPoints = reorderLayerPoints(
+      activeSegment.points,
+      nextSequencedIds,
+      hoverReorderStartNum
+    );
+
+    const targetIds = new Set(activeSegment.points.map((p) => p.id));
+    const indices: number[] = [];
+    rawPoints.forEach((p, idx) => {
+      if (targetIds.has(p.id)) {
+        indices.push(idx);
+      }
+    });
+
+    const updated = [...rawPoints];
+    indices.forEach((rawIdx, i) => {
+      updated[rawIdx] = reorderedSegmentPoints[i];
+    });
+
+    updated.forEach((p, idx) => {
+      p.originalIndex = idx;
+    });
+
+    setRawPoints(updated);
+
+    if (nextSequencedIds.length >= activeSegment.points.length) {
+      setNotification({
+        message: `Hover Reordering Complete: All ${activeSegment.points.length} points reordered for ${activeSegment.name || "Layer"}!`
+      });
+    }
   };
 
   // General manipulations
@@ -469,35 +698,143 @@ export default function App() {
     }
   };
 
-  // Global Toolpath stats calculation
-  const globalStats = useMemo(() => {
-    let length = 0;
-    for (let i = 1; i < rawPoints.length; i++) {
-      const dx = rawPoints[i].x - rawPoints[i - 1].x;
-      const dy = rawPoints[i].y - rawPoints[i - 1].y;
-      const dz = rawPoints[i].z - rawPoints[i - 1].z;
-      length += Math.sqrt(dx * dx + dy * dy + dz * dz);
-    }
+  // Global Keyboard Shortcuts:
+  // - R: Toggle Hover reorder toolpath
+  // - I: Invert toolpath direction of active layer
+  // - A: Toggle Arrow draw mode
+  // - Enter: Finish hover reordering if active
+  // - Ctrl+Z / Cmd+Z: Undo
+  // - Ctrl+Y / Cmd+Y / Ctrl+Shift+Z: Redo
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Do not trigger hotkeys if typing inside form inputs
+      const activeEl = document.activeElement;
+      if (
+        activeEl &&
+        (activeEl.tagName === "INPUT" ||
+          activeEl.tagName === "SELECT" ||
+          activeEl.tagName === "TEXTAREA" ||
+          activeEl.getAttribute("contenteditable") === "true")
+      ) {
+        return;
+      }
 
-    const uniqueZs = Array.from(new Set(rawPoints.map((p) => p.z)));
+      const isMac = navigator.platform.toUpperCase().indexOf("MAC") >= 0;
+      const modifierKey = isMac ? e.metaKey : e.ctrlKey;
 
-    // Extract feed boundary limits
-    const speeds = rawPoints.map((p) => p.speed);
-    const maxSpeed = speeds.length > 0 ? Math.max(...speeds) : 0;
-    const minSpeed = speeds.length > 0 ? Math.min(...speeds) : 0;
+      // Undo / Redo
+      if (modifierKey && e.key.toLowerCase() === "z") {
+        e.preventDefault();
+        if (e.shiftKey) {
+          handleRedo();
+        } else {
+          handleUndo();
+        }
+        return;
+      } else if (modifierKey && e.key.toLowerCase() === "y") {
+        e.preventDefault();
+        handleRedo();
+        return;
+      }
 
-    return {
-      totalDistance: Math.round(length * 10) / 10,
-      layerCount: uniqueZs.length,
-      pointCount: rawPoints.length,
-      maxSpeed,
-      minSpeed
+      // Single-key hotkeys (without Ctrl, Meta, or Alt modifiers)
+      if (!e.ctrlKey && !e.metaKey && !e.altKey) {
+        const key = e.key.toLowerCase();
+
+        // R: Hover reorder toolpath
+        if (key === "r") {
+          e.preventDefault();
+          if (isHoverReorderActive) {
+            handleToggleHoverReorder();
+          } else {
+            if (!activeSegment || activeSegment.points.length < 2) {
+              setNotification({
+                message: "Select a layer with at least 2 points to use Hover Reorder (Hotkey: R)"
+              });
+            } else {
+              handleToggleHoverReorder();
+            }
+          }
+          return;
+        }
+
+        // I: Invert Path
+        if (key === "i") {
+          e.preventDefault();
+          if (activeSegment && activeSegment.points.length > 1) {
+            handleInvertSegment(activeSegment.id);
+          } else {
+            setNotification({
+              message: "Select a layer with at least 2 points to invert path (Hotkey: I)"
+            });
+          }
+          return;
+        }
+
+        // A: Arrow draw mode
+        if (key === "a") {
+          e.preventDefault();
+          setIsArrowDrawingEnabled((prev) => {
+            const next = !prev;
+            setNotification({
+              message: next
+                ? "Arrow Draw Mode: Activated (use ↑ ↓ ← → to draw coordinates, Hotkey: A)"
+                : "Arrow Draw Mode: Deactivated (Hotkey: A)"
+            });
+            return next;
+          });
+          return;
+        }
+
+        // Enter: Commit / exit hover reordering when active
+        if (e.key === "Enter" && isHoverReorderActive) {
+          e.preventDefault();
+          handleToggleHoverReorder();
+          return;
+        }
+      }
     };
-  }, [rawPoints]);
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [
+    history,
+    future,
+    rawPoints,
+    isHoverReorderActive,
+    activeSegment,
+    handleToggleHoverReorder,
+    handleInvertSegment
+  ]);
 
   return (
     <div className="min-h-screen bg-[#f7f5e1] flex flex-col font-sans text-slate-800">
       
+      {/* Floating Action Feedback Notification */}
+      {notification && (
+        <div className="fixed top-5 left-1/2 -translate-x-1/2 z-50 bg-slate-900/95 backdrop-blur-md text-white px-4 py-2.5 rounded-lg shadow-xl text-xs font-mono flex items-center gap-3 border border-slate-700 animate-in fade-in slide-in-from-top-2">
+          <ArrowLeftRight className="w-4 h-4 text-emerald-400 shrink-0" />
+          <span className="font-medium text-slate-100">{notification.message}</span>
+          <button
+            onClick={() => {
+              handleUndo();
+              setNotification(null);
+            }}
+            className="px-2 py-0.5 bg-slate-800 hover:bg-slate-700 text-indigo-300 hover:text-indigo-200 border border-slate-600 rounded text-[10px] uppercase font-bold cursor-pointer transition select-none"
+            id="toast-undo-btn"
+          >
+            Undo
+          </button>
+          <button
+            onClick={() => setNotification(null)}
+            className="p-0.5 hover:bg-slate-800 rounded text-slate-400 hover:text-white transition cursor-pointer"
+            id="toast-dismiss-btn"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
+
       {/* Header & upper system controls */}
       <Toolbar
         onLoadPoints={handleLoadPoints}
@@ -525,6 +862,10 @@ export default function App() {
             fileName={fileName}
             onAddEmptySegment={handleAddEmptySegment}
             onDeleteSegments={handleDeleteSegments}
+            onRenameSegment={handleRenameSegment}
+            onDuplicateSegment={handleDuplicateSegment}
+            onInvertSegment={handleInvertSegment}
+            onInvertSegments={handleInvertSegments}
           />
 
           {/* CNC Modifiers tool card with bright styling */}
@@ -607,6 +948,8 @@ export default function App() {
         <div className="lg:col-span-6 w-full flex flex-col items-center justify-start min-h-[600px] overflow-visible">
           <InteractiveGrid
             points={activeSegment ? activeSegment.points : []}
+            allPoints={rawPoints}
+            fitViewTrigger={fitViewTrigger}
             onionSkinPoints={onionSkinSegment ? onionSkinSegment.points : undefined}
             selectedPointId={selectedPointId}
             onSelectPoint={handleSelectPoint}
@@ -617,6 +960,16 @@ export default function App() {
             activeSegmentId={selectedSegmentId || undefined}
             onDragStart={() => pushToHistory()}
             fileName={fileName}
+            onInvertToolpath={handleInvertSegment}
+            isHoverReorderActive={isHoverReorderActive}
+            onToggleHoverReorder={handleToggleHoverReorder}
+            hoverReorderStartNum={hoverReorderStartNum}
+            onUpdateHoverReorderStartNum={setHoverReorderStartNum}
+            hoverSequencedIds={hoverSequencedIds}
+            onHoverReorderPoint={handleHoverReorderPoint}
+            onResetHoverSequence={handleResetHoverSequence}
+            hoverReorderRequireClick={hoverReorderRequireClick}
+            onToggleHoverReorderRequireClick={handleToggleHoverReorderRequireClick}
           />
         </div>
 
@@ -642,60 +995,19 @@ export default function App() {
             onToggleArrowDrawing={() => setIsArrowDrawingEnabled((prev) => !prev)}
             arrowDrawDistance={arrowDrawDistance}
             onUpdateArrowDrawDistance={setArrowDrawDistance}
+            onInvertToolpath={() => selectedSegmentId && handleInvertSegment(selectedSegmentId)}
+            isHoverReorderActive={isHoverReorderActive}
+            onToggleHoverReorder={handleToggleHoverReorder}
+            hoverReorderStartNum={hoverReorderStartNum}
+            onUpdateHoverReorderStartNum={setHoverReorderStartNum}
+            hoverSequencedIds={hoverSequencedIds}
+            onResetHoverSequence={handleResetHoverSequence}
+            hoverReorderRequireClick={hoverReorderRequireClick}
+            onToggleHoverReorderRequireClick={handleToggleHoverReorderRequireClick}
           />
-
-          {/* Telemetry and Stats Console Container formatted precisely per design specs */}
-          <div className="bg-white border border-slate-300 rounded-lg p-4 shadow-md">
-            <h4 className="text-[10px] font-mono uppercase tracking-widest text-slate-700 font-bold mb-4 flex items-center gap-1.5 border-b border-slate-200 pb-2">
-              <Sparkles className="w-4 h-4 text-indigo-600" />
-              <span>Dispensing Telemetry</span>
-            </h4>
-            
-            {/* 2x2 grid stats */}
-            <div className="grid grid-cols-2 gap-2 mt-2">
-              <div className="p-3 rounded border border-slate-200 bg-slate-50/50">
-                <p className="text-[9px] font-mono uppercase text-slate-500 mb-1 font-bold">TOTAL NODES</p>
-                <p className="text-xl font-bold text-slate-800 font-mono">{globalStats.pointCount}</p>
-              </div>
-              <div className="p-3 rounded border border-slate-200 bg-slate-50/50">
-                <p className="text-[9px] font-mono uppercase text-slate-500 mb-1 font-bold">Z-LAYERS</p>
-                <p className="text-xl font-bold text-indigo-700 font-mono">{globalStats.layerCount}</p>
-              </div>
-              <div className="p-3 rounded border border-slate-200 bg-slate-50/50">
-                <p className="text-[9px] font-mono uppercase text-slate-500 mb-1 font-bold">FEED MAX</p>
-                <p className="text-base font-bold text-emerald-700 font-mono">F{globalStats.maxSpeed}</p>
-              </div>
-              <div className="p-3 rounded border border-slate-200 bg-slate-50/50">
-                <p className="text-[9px] font-mono uppercase text-slate-500 mb-1 font-bold">FEED MIN</p>
-                <p className="text-base font-bold text-indigo-700 font-mono font-semibold">F{globalStats.minSpeed || 300}</p>
-              </div>
-            </div>
-
-            {/* Total linear Euclidean machining track travel length stats */}
-            <div className="mt-3 p-3 bg-indigo-50 border border-indigo-100 rounded flex items-center justify-between text-xs font-mono">
-              <span className="text-indigo-800 font-semibold uppercase tracking-tight">Active Job Travel:</span>
-              <span className="text-indigo-900 font-bold text-sm tracking-wide">{globalStats.totalDistance} mm</span>
-            </div>
-          </div>
         </div>
 
       </div>
-
-      {/* Aesthetic Footer container */}
-      <footer className="h-12 border-t border-slate-300 bg-white flex items-center justify-between px-6 shrink-0 z-20 shadow-sm">
-        <div className="flex items-center gap-8 text-[10px] font-mono text-slate-600 uppercase tracking-widest font-semibold">
-          <div className="flex items-center gap-1.5">
-            <Cpu className="w-3.5 h-3.5 text-indigo-600" />
-            <span>CRITICAL PATH EDITOR</span>
-          </div>
-          <div className="hidden md:block">Toolhead: <span className="text-indigo-700 ml-1 font-bold">N02 Precision Dispenser</span></div>
-          <div className="hidden sm:block">Status: <span className="text-emerald-700 ml-1 font-bold">Ready</span></div>
-        </div>
-        <div className="flex items-center gap-3">
-          <span className="text-[10px] font-mono text-slate-500 uppercase tracking-widest font-bold">MODE: ACTIVE</span>
-          <div className="w-2.5 h-2.5 rounded-full bg-emerald-500"></div>
-        </div>
-      </footer>
     </div>
   );
 }

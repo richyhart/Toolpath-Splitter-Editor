@@ -125,7 +125,7 @@ export default function Toolbar({
           </div>
           <div>
             <h1 className="text-xl font-bold tracking-tight text-slate-800 flex items-center gap-2" id="app-title">
-              <span>DISPENSE<span className="text-indigo-600 font-light">GRID</span></span>
+              <span>TOOLPATH <span className="text-indigo-600 font-light">EDITOR</span></span>
             </h1>
             <p className="text-[10px] font-mono text-slate-500 uppercase tracking-widest mt-0.5">
               Coordinate / Toolpath editor and viewer V1.0 by Richy Hart

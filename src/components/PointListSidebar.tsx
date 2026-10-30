@@ -5,7 +5,7 @@
 
 import React, { useRef, useEffect } from "react";
 import { ToolpathPoint, GridSettings } from "../types";
-import { Trash2, Plus, ToggleLeft, ToggleRight, Eye, EyeOff, Navigation, Keyboard } from "lucide-react";
+import { Trash2, Plus, ToggleLeft, ToggleRight, Eye, EyeOff, Navigation, Keyboard, ArrowLeftRight, ListOrdered, RotateCcw, MousePointerClick } from "lucide-react";
 
 interface CoordinateInputProps {
   value: number;
@@ -80,6 +80,15 @@ interface PointListSidebarProps {
   onToggleArrowDrawing: () => void;
   arrowDrawDistance: number;
   onUpdateArrowDrawDistance: (distance: number) => void;
+  onInvertToolpath?: () => void;
+  isHoverReorderActive?: boolean;
+  onToggleHoverReorder?: () => void;
+  hoverReorderStartNum?: number;
+  onUpdateHoverReorderStartNum?: (num: number) => void;
+  hoverSequencedIds?: string[];
+  onResetHoverSequence?: () => void;
+  hoverReorderRequireClick?: boolean;
+  onToggleHoverReorderRequireClick?: () => void;
 }
 
 export default function PointListSidebar({
@@ -100,7 +109,16 @@ export default function PointListSidebar({
   isArrowDrawingEnabled,
   onToggleArrowDrawing,
   arrowDrawDistance,
-  onUpdateArrowDrawDistance
+  onUpdateArrowDrawDistance,
+  onInvertToolpath,
+  isHoverReorderActive = false,
+  onToggleHoverReorder,
+  hoverReorderStartNum = 1,
+  onUpdateHoverReorderStartNum,
+  hoverSequencedIds = [],
+  onResetHoverSequence,
+  hoverReorderRequireClick = false,
+  onToggleHoverReorderRequireClick,
 }: PointListSidebarProps) {
   const activeRowRef = useRef<HTMLTableRowElement>(null);
 
@@ -212,50 +230,170 @@ export default function PointListSidebar({
   return (
     <div className="bg-white border border-slate-300 rounded-lg overflow-hidden shadow-lg flex flex-col flex-1">
       {/* Workspace Controls Header */}
-      <div className="bg-slate-100 px-4 py-3.5 border-b border-slate-300 space-y-3">
-        <div className="flex items-center justify-between gap-1">
+      <div className="bg-slate-100 px-4 py-3 border-b border-slate-300 space-y-2.5">
+        <div className="flex items-center justify-between">
           <span className="text-slate-800 font-semibold font-mono text-[11px] uppercase tracking-widest flex items-center gap-2">
             <Navigation className="w-4 h-4 text-indigo-600" />
-            <span>Layer Coordinates ({segmentPoints.length})</span>
+            <span>Layer Coordinates</span>
           </span>
-          <div className="flex items-center gap-1.5 shrink-0">
-            {/* Step size input box designed precisely for space-efficient integration */}
-            <div className="flex items-center bg-white border border-slate-300 rounded px-1.5 py-0.5" title="Arrow Key Step Distance (mm)">
-              <input
-                type="number"
-                step="0.5"
-                min="0.1"
-                max="50"
-                value={arrowDrawDistance}
-                onChange={(e) => onUpdateArrowDrawDistance(Math.max(0.1, parseFloat(e.target.value) || 0.1))}
-                className="w-10 border-none bg-transparent text-right font-mono text-[10px] text-slate-800 font-bold focus:outline-none p-0"
-              />
-              <span className="text-slate-400 text-[8px] font-bold uppercase font-mono ml-0.5">mm</span>
-            </div>
-            <button
-              onClick={onToggleArrowDrawing}
-              className={`py-1 px-2.5 rounded border font-mono text-[9px] font-bold uppercase transition flex items-center gap-1.5 cursor-pointer select-none ${
-                isArrowDrawingEnabled
-                  ? "bg-amber-500 hover:bg-amber-600 text-white border-amber-600 font-extrabold shadow-sm"
-                  : "bg-white hover:bg-slate-50 text-slate-600 border-slate-300 hover:text-slate-800"
-              }`}
-              id="toggle-arrow-draw-btn"
-              title="Enable using arrow keys (↑ ↓ ← →) to draw new points"
-            >
-              <Keyboard className="w-3.5 h-3.5" />
-              <span>{isArrowDrawingEnabled ? "KEYBOARD ON" : "Arrow Draw"}</span>
-            </button>
-          </div>
+          <span className="text-[10px] bg-indigo-50 text-indigo-600 border border-indigo-200 font-mono px-2 py-0.5 rounded-full font-bold">
+            {segmentPoints.length} {segmentPoints.length === 1 ? "POINT" : "POINTS"}
+          </span>
         </div>
 
-        {isArrowDrawingEnabled && (
-          <div className="bg-amber-50 border border-amber-200 p-2 rounded text-[10px] text-amber-950 font-mono flex flex-col gap-0.5 shadow-sm animate-pulse-subtle">
-            <div className="font-bold uppercase tracking-wider flex items-center gap-1">
-              <span className="w-2 h-2 rounded-full bg-amber-500 inline-block"></span>
-              <span>ARROW DRAWING MODE ON</span>
+        {/* Stacked Action Controls */}
+        <div className="flex flex-col gap-1.5 pt-0.5">
+          {onInvertToolpath && (
+            <button
+              onClick={onInvertToolpath}
+              disabled={segmentPoints.length < 2}
+              className="w-full py-1.5 px-3 rounded border border-indigo-200 bg-white hover:bg-indigo-50 text-indigo-700 hover:text-indigo-900 disabled:opacity-40 disabled:cursor-not-allowed font-mono text-[10px] font-bold uppercase transition flex items-center justify-between cursor-pointer select-none shadow-2xs hover:shadow-xs"
+              id="invert-toolpath-btn"
+              title="Invert toolpath direction of this layer (Hotkey: I)"
+            >
+              <div className="flex items-center gap-1.5">
+                <ArrowLeftRight className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
+                <span>Invert Path (Reverse Direction)</span>
+              </div>
+              <kbd className="px-1.5 py-0.2 bg-indigo-50 border border-indigo-200 text-indigo-700 rounded text-[9px] font-mono font-bold shadow-2xs">
+                I
+              </kbd>
+            </button>
+          )}
+
+          {onToggleHoverReorder && (
+            <button
+              onClick={onToggleHoverReorder}
+              disabled={segmentPoints.length < 2}
+              className={`w-full py-1.5 px-3 rounded border font-mono text-[10px] font-bold uppercase transition flex items-center justify-between cursor-pointer select-none disabled:opacity-40 disabled:cursor-not-allowed shadow-2xs ${
+                isHoverReorderActive
+                  ? "bg-violet-600 hover:bg-violet-700 text-white border-violet-700 font-extrabold shadow-sm"
+                  : "bg-white hover:bg-violet-50 text-slate-700 border-slate-300 hover:border-violet-300 hover:text-violet-700"
+              }`}
+              id="toggle-hover-reorder-sidebar-btn"
+              title="Reorder toolpath by hovering over points on the canvas (Hotkey: R)"
+            >
+              <div className="flex items-center gap-1.5">
+                <ListOrdered className={`w-3.5 h-3.5 shrink-0 ${isHoverReorderActive ? "text-white" : "text-violet-600"}`} />
+                <span>{isHoverReorderActive ? "Hover Reorder: Active" : "Hover Reorder Toolpath"}</span>
+              </div>
+              <kbd className={`px-1.5 py-0.2 rounded text-[9px] font-mono font-bold border shadow-2xs ${
+                isHoverReorderActive
+                  ? "bg-violet-800 text-white border-violet-700"
+                  : "bg-slate-100 text-slate-600 border-slate-300"
+              }`}>
+                R
+              </kbd>
+            </button>
+          )}
+        </div>
+
+        {isHoverReorderActive && (
+          <div className="bg-violet-50 border border-violet-200 p-2.5 rounded text-[10px] text-violet-950 font-mono flex flex-col gap-2 shadow-sm animate-fadeIn">
+            <div className="font-bold uppercase tracking-wider flex items-center justify-between">
+              <div className="flex items-center gap-1.5 text-violet-800">
+                <span className="w-2 h-2 rounded-full bg-violet-600 inline-block animate-pulse"></span>
+                <span>HOVER SEQUENCING ACTIVE</span>
+              </div>
+              {onResetHoverSequence && hoverSequencedIds.length > 0 && (
+                <button
+                  type="button"
+                  onClick={onResetHoverSequence}
+                  className="px-1.5 py-0.5 bg-white hover:bg-violet-100 text-violet-700 rounded border border-violet-300 text-[9px] font-semibold flex items-center gap-1 cursor-pointer transition shadow-2xs"
+                  title="Restart sequencing pass"
+                  id="sidebar-reset-hover-btn"
+                >
+                  <RotateCcw className="w-2.5 h-2.5" />
+                  <span>Restart</span>
+                </button>
+              )}
             </div>
-            <p className="text-slate-600 leading-normal">
-              Press <span className="font-bold text-slate-800 bg-amber-100 px-0.5 rounded">↑</span> / <span className="font-bold text-slate-800 bg-amber-100 px-0.5 rounded">↓</span> / <span className="font-bold text-slate-800 bg-amber-100 px-0.5 rounded">←</span> / <span className="font-bold text-slate-800 bg-amber-100 px-0.5 rounded">→</span> on your keyboard to instantly add coordinates <span className="font-bold text-slate-900 bg-amber-150 px-0.5 rounded">{arrowDrawDistance}mm</span> away!
+
+            {/* Toggle button: Mouse click required vs Hover only */}
+            <div className="flex items-center justify-between bg-white/95 p-1.5 rounded border border-violet-200">
+              <div className="flex items-center gap-1 text-slate-700">
+                <MousePointerClick className={`w-3.5 h-3.5 ${hoverReorderRequireClick ? "text-violet-600" : "text-slate-400"}`} />
+                <span className="font-bold text-[9px] text-slate-600 uppercase">Mouse Click:</span>
+              </div>
+              <button
+                type="button"
+                onClick={onToggleHoverReorderRequireClick}
+                className={`px-2 py-0.5 rounded text-[9px] font-bold border transition flex items-center gap-1 cursor-pointer shadow-2xs select-none ${
+                  hoverReorderRequireClick
+                    ? "bg-violet-600 hover:bg-violet-700 text-white border-violet-700 font-extrabold"
+                    : "bg-slate-100 hover:bg-slate-200 text-slate-700 border-slate-300 hover:text-slate-900"
+                }`}
+                id="toggle-hover-reorder-click-mode-btn"
+                title={
+                  hoverReorderRequireClick
+                    ? "Click is required to register each point. Click to switch to Hover Only mode."
+                    : "Points register automatically on hover. Click to require mouse click on points."
+                }
+              >
+                {hoverReorderRequireClick ? (
+                  <>
+                    <span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse"></span>
+                    <span>Required</span>
+                  </>
+                ) : (
+                  <>
+                    <span className="text-slate-400">○</span>
+                    <span>Hover Only</span>
+                  </>
+                )}
+              </button>
+            </div>
+
+            <div className="flex items-center justify-between text-slate-700 bg-white/90 p-1.5 rounded border border-violet-200">
+              <div className="flex items-center gap-1">
+                <span className="font-bold text-[9px] text-slate-500 uppercase">Start #:</span>
+                <div className="flex items-center">
+                  <button
+                    type="button"
+                    onClick={() => onUpdateHoverReorderStartNum?.(Math.max(1, hoverReorderStartNum - 1))}
+                    className="w-4 h-4 flex items-center justify-center bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-l border border-slate-300 text-[10px] font-bold cursor-pointer"
+                  >
+                    -
+                  </button>
+                  <input
+                    type="number"
+                    min={1}
+                    max={Math.max(1, segmentPoints.length)}
+                    value={hoverReorderStartNum}
+                    onChange={(e) => {
+                      const val = parseInt(e.target.value, 10);
+                      if (!isNaN(val)) {
+                        onUpdateHoverReorderStartNum?.(Math.max(1, Math.min(val, Math.max(1, segmentPoints.length))));
+                      }
+                    }}
+                    className="w-8 h-4 text-center bg-white border-y border-slate-300 text-slate-900 font-bold text-[10px] focus:outline-none focus:border-violet-500 font-mono"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => onUpdateHoverReorderStartNum?.(Math.min(Math.max(1, segmentPoints.length), hoverReorderStartNum + 1))}
+                    className="w-4 h-4 flex items-center justify-center bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-r border border-slate-300 text-[10px] font-bold cursor-pointer"
+                  >
+                    +
+                  </button>
+                </div>
+              </div>
+              <div className="flex items-center gap-1 text-[9px]">
+                <span className="text-slate-500 font-bold uppercase">Next:</span>
+                <span className="px-1.5 py-0.5 bg-violet-600 text-white font-extrabold rounded">
+                  #{Math.min(segmentPoints.length, (hoverReorderStartNum - 1) + hoverSequencedIds.length + 1)}
+                </span>
+              </div>
+              <div className="flex items-center gap-0.5 text-[9px] text-slate-500">
+                <span>Done:</span>
+                <span className="font-bold text-violet-700">{hoverSequencedIds.length}</span>
+                <span>/</span>
+                <span>{segmentPoints.length}</span>
+              </div>
+            </div>
+            <p className="text-slate-600 leading-tight text-[9px]">
+              {hoverReorderRequireClick
+                ? "Hover pointer over nodes and click to register sequence. Points will not reorder until clicked."
+                : `Hover pointer over nodes on the grid. 1st hovered point becomes #${hoverReorderStartNum}, 2nd becomes #${hoverReorderStartNum + 1}...`}
             </p>
           </div>
         )}
@@ -331,6 +469,61 @@ export default function PointListSidebar({
           <div className="flex items-center justify-between pl-2 pt-2 mt-1.5 border-t border-dashed border-slate-200 text-slate-400 font-mono text-[8px] uppercase font-semibold">
             <span>Drag '#' to order</span>
           </div>
+        </div>
+
+        {/* Arrow Draw Key Controls (Mode button and set distance) */}
+        <div className="space-y-1.5">
+          <div className="flex items-center gap-2">
+            <button
+              onClick={onToggleArrowDrawing}
+              className={`flex-1 py-1.5 px-2.5 rounded border font-mono text-[10px] font-bold uppercase transition flex items-center justify-between cursor-pointer select-none shadow-2xs ${
+                isArrowDrawingEnabled
+                  ? "bg-amber-500 hover:bg-amber-600 text-white border-amber-600 font-extrabold shadow-sm"
+                  : "bg-white hover:bg-slate-50 text-slate-600 border-slate-300 hover:text-slate-800"
+              }`}
+              id="toggle-arrow-draw-btn"
+              title="Enable using arrow keys (↑ ↓ ← →) to draw new points (Hotkey: A)"
+            >
+              <div className="flex items-center gap-1.5 min-w-0">
+                <Keyboard className="w-3.5 h-3.5 shrink-0" />
+                <span className="truncate">{isArrowDrawingEnabled ? "Arrow Draw: Active" : "Arrow Draw Mode"}</span>
+              </div>
+              <kbd className={`px-1.5 py-0.2 rounded text-[9px] font-mono font-bold border shrink-0 shadow-2xs ${
+                isArrowDrawingEnabled
+                  ? "bg-amber-700 text-white border-amber-800"
+                  : "bg-slate-100 text-slate-600 border-slate-300"
+              }`}>
+                A
+              </kbd>
+            </button>
+            <div 
+              className="flex items-center bg-white border border-slate-300 rounded px-2 py-1 shadow-2xs shrink-0" 
+              title="Arrow Key Step Distance (mm)"
+            >
+              <input
+                type="number"
+                step="0.5"
+                min="0.1"
+                max="50"
+                value={arrowDrawDistance}
+                onChange={(e) => onUpdateArrowDrawDistance(Math.max(0.1, parseFloat(e.target.value) || 0.1))}
+                className="w-10 border-none bg-transparent text-right font-mono text-[10px] text-slate-800 font-bold focus:outline-none p-0"
+              />
+              <span className="text-slate-400 text-[8px] font-bold uppercase font-mono ml-0.5">mm</span>
+            </div>
+          </div>
+
+          {isArrowDrawingEnabled && (
+            <div className="bg-amber-50 border border-amber-200 p-2 rounded text-[10px] text-amber-950 font-mono flex flex-col gap-0.5 shadow-sm animate-pulse-subtle">
+              <div className="font-bold uppercase tracking-wider flex items-center gap-1">
+                <span className="w-2 h-2 rounded-full bg-amber-500 inline-block"></span>
+                <span>ARROW DRAWING MODE ON</span>
+              </div>
+              <p className="text-slate-600 leading-normal">
+                Press <span className="font-bold text-slate-800 bg-amber-100 px-0.5 rounded">↑</span> / <span className="font-bold text-slate-800 bg-amber-100 px-0.5 rounded">↓</span> / <span className="font-bold text-slate-800 bg-amber-100 px-0.5 rounded">←</span> / <span className="font-bold text-slate-800 bg-amber-100 px-0.5 rounded">→</span> on your keyboard to instantly add coordinates <span className="font-bold text-slate-900 bg-amber-150 px-0.5 rounded">{arrowDrawDistance}mm</span> away!
+              </p>
+            </div>
+          )}
         </div>
 
         {/* Default Coordinate Insertion Offset Card */}
@@ -432,6 +625,9 @@ export default function PointListSidebar({
                 const isSelected = pt.id === selectedPointId;
                 const isDragOver = pt.id === dragOverPointId;
                 const isDragged = pt.id === draggedPointId;
+                const seqIdx = hoverSequencedIds.indexOf(pt.id);
+                const isSequencedInHover = seqIdx !== -1;
+                const assignedSeqNum = isSequencedInHover ? hoverReorderStartNum + seqIdx : null;
 
                 return (
                   <tr
@@ -442,7 +638,9 @@ export default function PointListSidebar({
                      onDragLeave={handleDragLeave}
                      onDrop={(e) => handleDrop(e, pt.id)}
                      className={`transition duration-150 cursor-pointer ${
-                       isSelected 
+                       isSequencedInHover
+                         ? "bg-violet-50/80 border-l-[3px] border-l-violet-600 text-slate-900 font-medium"
+                         : isSelected 
                          ? "bg-indigo-50 border-y border-indigo-200 text-indigo-900 font-medium" 
                          : "hover:bg-slate-100/80"
                      } ${
@@ -513,7 +711,7 @@ export default function PointListSidebar({
                         </div>
                       ) : (
                         <div 
-                          className="flex items-center justify-center gap-0.5 group cursor-pointer h-6"
+                          className="flex items-center justify-center gap-1 group cursor-pointer h-6"
                           onClick={(e) => {
                             e.stopPropagation();
                             setEditingIndexId(pt.id);
@@ -524,6 +722,11 @@ export default function PointListSidebar({
                           <span className="font-bold underline decoration-dotted decoration-indigo-400/75 group-hover:decoration-solid group-hover:text-indigo-800 text-indigo-650" title="Click to edit point order index">
                             {idy + 1}
                           </span>
+                          {isSequencedInHover && (
+                            <span className="px-1 py-0.2 bg-violet-600 text-white rounded text-[8px] font-bold font-mono shadow-2xs" title={`Assigned #${assignedSeqNum} in hover reorder`}>
+                              #{assignedSeqNum}
+                            </span>
+                          )}
                         </div>
                       )}
                     </td>
