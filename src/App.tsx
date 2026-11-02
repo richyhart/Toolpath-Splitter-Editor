@@ -5,7 +5,7 @@
 
 import { useState, useEffect, useMemo } from "react";
 import { ToolpathPoint, GridSettings, ToolpathSegment } from "./types";
-import { generateSampleSpiral, splitToolpathByZ, generateId, reverseToolpathPoints, reorderLayerPoints } from "./utils";
+import { generateSampleSpiral, splitToolpathByZ, generateId, reverseToolpathPoints, reverseToolpathRange, reorderLayerPoints } from "./utils";
 import Toolbar from "./components/Toolbar";
 import InteractiveGrid from "./components/InteractiveGrid";
 import SegmentSidebar from "./components/SegmentSidebar";
@@ -21,11 +21,16 @@ export default function App() {
   const [fitViewTrigger, setFitViewTrigger] = useState<number>(0);
   const [notification, setNotification] = useState<{ message: string } | null>(null);
 
+  // Invert Toolpath Scope and Range State
+  const [invertScope, setInvertScope] = useState<"all" | "range">("all");
+  const [invertRangeStart, setInvertRangeStart] = useState<number>(1);
+  const [invertRangeEnd, setInvertRangeEnd] = useState<number>(1);
+
   // Hover Reordering Toolpath State
   const [isHoverReorderActive, setIsHoverReorderActive] = useState<boolean>(false);
   const [hoverReorderStartNum, setHoverReorderStartNum] = useState<number>(1);
   const [hoverSequencedIds, setHoverSequencedIds] = useState<string[]>([]);
-  const [hoverReorderRequireClick, setHoverReorderRequireClick] = useState<boolean>(false);
+  const [hoverReorderRequireClick, setHoverReorderRequireClick] = useState<boolean>(true);
 
   useEffect(() => {
     if (!notification) return;
@@ -146,6 +151,19 @@ export default function App() {
   const activeSegment = useMemo(() => {
     return combinedSegments.find((s) => s.id === selectedSegmentId) || null;
   }, [combinedSegments, selectedSegmentId]);
+
+  // Sync invert range bounds with active segment point count
+  useEffect(() => {
+    if (activeSegment && activeSegment.points.length > 0) {
+      setInvertRangeStart((prev) => Math.max(1, Math.min(prev, activeSegment.points.length)));
+      setInvertRangeEnd((prev) => {
+        if (prev <= 1 && activeSegment.points.length > 1) {
+          return activeSegment.points.length;
+        }
+        return Math.max(1, Math.min(prev, activeSegment.points.length));
+      });
+    }
+  }, [activeSegment?.id, activeSegment?.points.length]);
 
   const handleArrowKeyDraw = (dx: number, dy: number) => {
     const activePoints = activeSegment ? activeSegment.points : [];
@@ -513,15 +531,21 @@ export default function App() {
   };
 
   /**
-   * Invert the toolpath direction start-to-finish of a whole layer
+   * Invert the toolpath direction start-to-finish of a whole layer, or a select range of points
    */
-  const handleInvertSegment = (segmentId: string) => {
+  const handleInvertSegment = (
+    segmentId: string,
+    range?: { startIndex: number; endIndex: number }
+  ) => {
     const targetSeg = combinedSegments.find((s) => s.id === segmentId);
     if (!targetSeg || targetSeg.points.length <= 1) return;
 
     pushToHistory();
 
-    const reversedSegmentPoints = reverseToolpathPoints(targetSeg.points);
+    const startIdx = range !== undefined ? Math.max(0, Math.min(range.startIndex, range.endIndex)) : 0;
+    const endIdx = range !== undefined ? Math.min(targetSeg.points.length - 1, Math.max(range.startIndex, range.endIndex)) : targetSeg.points.length - 1;
+
+    const reversedSegmentPoints = reverseToolpathRange(targetSeg.points, startIdx, endIdx);
     const targetIds = new Set(targetSeg.points.map((p) => p.id));
 
     // Find all indices of target segment in rawPoints
@@ -544,8 +568,11 @@ export default function App() {
 
     setRawPoints(updated);
 
+    const isPartial = startIdx > 0 || endIdx < targetSeg.points.length - 1;
     setNotification({
-      message: `Inverted toolpath direction for ${targetSeg.name || "Layer"} (${targetSeg.points.length} points: Start ⇄ Finish reversed)`
+      message: isPartial
+        ? `Inverted toolpath range for ${targetSeg.name || "Layer"}: Points #${startIdx + 1} ⇄ #${endIdx + 1} (${endIdx - startIdx + 1} points reversed)`
+        : `Inverted toolpath direction for ${targetSeg.name || "Layer"} (${targetSeg.points.length} points: Start ⇄ Finish reversed)`
     });
   };
 
@@ -600,8 +627,10 @@ export default function App() {
       if (!next) {
         setHoverSequencedIds([]);
       } else {
+        // When using Hover Reorder Toolpath, enable click required by default
+        setHoverReorderRequireClick(true);
         setNotification({
-          message: `Hover Reorder activated for ${activeSegment?.name || "Layer"}. Hover points in order to sequence.`
+          message: `Hover Reorder activated for ${activeSegment?.name || "Layer"}. Click points in order to sequence (Click Required: ON).`
         });
       }
       return next;
@@ -762,7 +791,11 @@ export default function App() {
         if (key === "i") {
           e.preventDefault();
           if (activeSegment && activeSegment.points.length > 1) {
-            handleInvertSegment(activeSegment.id);
+            const rangeArg =
+              invertScope === "range"
+                ? { startIndex: invertRangeStart - 1, endIndex: invertRangeEnd - 1 }
+                : undefined;
+            handleInvertSegment(activeSegment.id, rangeArg);
           } else {
             setNotification({
               message: "Select a layer with at least 2 points to invert path (Hotkey: I)"
@@ -804,7 +837,10 @@ export default function App() {
     isHoverReorderActive,
     activeSegment,
     handleToggleHoverReorder,
-    handleInvertSegment
+    handleInvertSegment,
+    invertScope,
+    invertRangeStart,
+    invertRangeEnd
   ]);
 
   return (
@@ -961,6 +997,8 @@ export default function App() {
             onDragStart={() => pushToHistory()}
             fileName={fileName}
             onInvertToolpath={handleInvertSegment}
+            invertScope={invertScope}
+            invertRange={{ start: invertRangeStart, end: invertRangeEnd }}
             isHoverReorderActive={isHoverReorderActive}
             onToggleHoverReorder={handleToggleHoverReorder}
             hoverReorderStartNum={hoverReorderStartNum}
@@ -995,7 +1033,13 @@ export default function App() {
             onToggleArrowDrawing={() => setIsArrowDrawingEnabled((prev) => !prev)}
             arrowDrawDistance={arrowDrawDistance}
             onUpdateArrowDrawDistance={setArrowDrawDistance}
-            onInvertToolpath={() => selectedSegmentId && handleInvertSegment(selectedSegmentId)}
+            onInvertToolpath={(range) => selectedSegmentId && handleInvertSegment(selectedSegmentId, range)}
+            invertScope={invertScope}
+            onUpdateInvertScope={setInvertScope}
+            invertRangeStart={invertRangeStart}
+            onUpdateInvertRangeStart={setInvertRangeStart}
+            invertRangeEnd={invertRangeEnd}
+            onUpdateInvertRangeEnd={setInvertRangeEnd}
             isHoverReorderActive={isHoverReorderActive}
             onToggleHoverReorder={handleToggleHoverReorder}
             hoverReorderStartNum={hoverReorderStartNum}

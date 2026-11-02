@@ -21,7 +21,7 @@ interface InteractiveGridProps {
   fileName?: string;
   allPoints?: ToolpathPoint[];
   fitViewTrigger?: number;
-  onInvertToolpath?: (segmentId: string) => void;
+  onInvertToolpath?: (segmentId: string, range?: { startIndex: number; endIndex: number }) => void;
   isHoverReorderActive?: boolean;
   onToggleHoverReorder?: () => void;
   hoverReorderStartNum?: number;
@@ -31,6 +31,8 @@ interface InteractiveGridProps {
   onResetHoverSequence?: () => void;
   hoverReorderRequireClick?: boolean;
   onToggleHoverReorderRequireClick?: () => void;
+  invertScope?: "all" | "range";
+  invertRange?: { start: number; end: number };
 }
 
 export default function InteractiveGrid({
@@ -55,8 +57,10 @@ export default function InteractiveGrid({
   hoverSequencedIds = [],
   onHoverReorderPoint,
   onResetHoverSequence,
-  hoverReorderRequireClick = false,
+  hoverReorderRequireClick = true,
   onToggleHoverReorderRequireClick,
+  invertScope = "all",
+  invertRange,
 }: InteractiveGridProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
@@ -549,7 +553,8 @@ export default function InteractiveGrid({
 
       {/* Overlays top-left: Controller buttons with strict event separation */}
       <div 
-        className="absolute top-4 left-4 z-30 flex items-center gap-2 flex-wrap bg-white/90 backdrop-blur-md px-2.5 py-1.5 rounded border border-slate-300 shadow-md"
+        className="absolute top-4 left-4 z-30 flex items-center gap-2 flex-wrap bg-white/90 backdrop-blur-md px-2.5 py-1.5 rounded border border-slate-300 shadow-md w-[725px]"
+        style={{ width: "725px" }}
         onMouseDown={(e) => e.stopPropagation()}
         onClick={(e) => e.stopPropagation()}
       >
@@ -977,6 +982,12 @@ export default function InteractiveGrid({
               const seqIndex = hoverSequencedIds.indexOf(pt.id);
               const isSequenced = seqIndex !== -1;
               const assignedOrderNum = isSequenced ? hoverReorderStartNum + seqIndex : null;
+              const isInInvertRange =
+                invertScope === "range" &&
+                invertRange &&
+                !isHoverReorderActive &&
+                index >= Math.min(invertRange.start, invertRange.end) - 1 &&
+                index <= Math.max(invertRange.start, invertRange.end) - 1;
 
               return (
                 <g key={`node-group-${pt.id}`}>
@@ -1022,6 +1033,20 @@ export default function InteractiveGrid({
                     }}
                     onMouseLeave={() => setHoveredPoint(null)}
                   />
+
+                  {/* Range invert highlight ring on canvas */}
+                  {isInInvertRange && !isSelected && (
+                    <circle
+                      cx={x}
+                      cy={y}
+                      r={6.5}
+                      fill="none"
+                      stroke="#6366f1"
+                      strokeWidth={1.5}
+                      strokeDasharray="2 2"
+                      className="pointer-events-none"
+                    />
+                  )}
 
                   {/* Visual Circle outer ring - customizable color based on node position in segment */}
                   <circle

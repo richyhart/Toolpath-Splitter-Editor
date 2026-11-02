@@ -80,7 +80,13 @@ interface PointListSidebarProps {
   onToggleArrowDrawing: () => void;
   arrowDrawDistance: number;
   onUpdateArrowDrawDistance: (distance: number) => void;
-  onInvertToolpath?: () => void;
+  onInvertToolpath?: (range?: { startIndex: number; endIndex: number }) => void;
+  invertScope?: "all" | "range";
+  onUpdateInvertScope?: (scope: "all" | "range") => void;
+  invertRangeStart?: number;
+  onUpdateInvertRangeStart?: (num: number) => void;
+  invertRangeEnd?: number;
+  onUpdateInvertRangeEnd?: (num: number) => void;
   isHoverReorderActive?: boolean;
   onToggleHoverReorder?: () => void;
   hoverReorderStartNum?: number;
@@ -111,13 +117,19 @@ export default function PointListSidebar({
   arrowDrawDistance,
   onUpdateArrowDrawDistance,
   onInvertToolpath,
+  invertScope = "all",
+  onUpdateInvertScope,
+  invertRangeStart = 1,
+  onUpdateInvertRangeStart,
+  invertRangeEnd = 1,
+  onUpdateInvertRangeEnd,
   isHoverReorderActive = false,
   onToggleHoverReorder,
   hoverReorderStartNum = 1,
   onUpdateHoverReorderStartNum,
   hoverSequencedIds = [],
   onResetHoverSequence,
-  hoverReorderRequireClick = false,
+  hoverReorderRequireClick = true,
   onToggleHoverReorderRequireClick,
 }: PointListSidebarProps) {
   const activeRowRef = useRef<HTMLTableRowElement>(null);
@@ -129,6 +141,25 @@ export default function PointListSidebar({
   // Manual key-in point number index re-ordering
   const [editingIndexId, setEditingIndexId] = React.useState<string | null>(null);
   const [tempIndexValue, setTempIndexValue] = React.useState<string>("");
+
+  const selectedPointIndex = selectedPointId
+    ? segmentPoints.findIndex((p) => p.id === selectedPointId)
+    : null;
+  const resolvedInvertStart = Math.min(invertRangeStart, invertRangeEnd);
+  const resolvedInvertEnd = Math.max(invertRangeStart, invertRangeEnd);
+  const invertRangeCount = Math.max(0, resolvedInvertEnd - resolvedInvertStart + 1);
+
+  const handleExecuteInvert = () => {
+    if (!onInvertToolpath) return;
+    if (invertScope === "range") {
+      onInvertToolpath({
+        startIndex: resolvedInvertStart - 1,
+        endIndex: resolvedInvertEnd - 1
+      });
+    } else {
+      onInvertToolpath();
+    }
+  };
 
   const handleSavePointNumber = (pointId: string, currentIndex: number) => {
     setEditingIndexId(null);
@@ -244,21 +275,174 @@ export default function PointListSidebar({
         {/* Stacked Action Controls */}
         <div className="flex flex-col gap-1.5 pt-0.5">
           {onInvertToolpath && (
-            <button
-              onClick={onInvertToolpath}
-              disabled={segmentPoints.length < 2}
-              className="w-full py-1.5 px-3 rounded border border-indigo-200 bg-white hover:bg-indigo-50 text-indigo-700 hover:text-indigo-900 disabled:opacity-40 disabled:cursor-not-allowed font-mono text-[10px] font-bold uppercase transition flex items-center justify-between cursor-pointer select-none shadow-2xs hover:shadow-xs"
-              id="invert-toolpath-btn"
-              title="Invert toolpath direction of this layer (Hotkey: I)"
-            >
-              <div className="flex items-center gap-1.5">
-                <ArrowLeftRight className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
-                <span>Invert Path (Reverse Direction)</span>
+            <div className="bg-white rounded border border-indigo-200 overflow-hidden shadow-2xs">
+              {/* Header with Scope Switcher (All vs Range) */}
+              <div className="flex items-center justify-between px-2.5 py-1.5 bg-indigo-50/50 border-b border-indigo-100">
+                <div className="flex items-center gap-1.5 text-indigo-900 font-mono text-[10px] font-bold uppercase">
+                  <ArrowLeftRight className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
+                  <span>Invert Path</span>
+                </div>
+                <div className="flex items-center rounded bg-slate-200/80 p-0.5 border border-slate-300 text-[9px] font-mono font-bold">
+                  <button
+                    type="button"
+                    onClick={() => onUpdateInvertScope?.("all")}
+                    className={`px-2 py-0.5 rounded transition cursor-pointer ${
+                      invertScope === "all"
+                        ? "bg-white text-indigo-700 shadow-2xs font-extrabold"
+                        : "text-slate-600 hover:text-slate-900"
+                    }`}
+                    title="Invert whole layer (all points 1 to N)"
+                    id="invert-scope-all-btn"
+                  >
+                    All
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onUpdateInvertScope?.("range")}
+                    className={`px-2 py-0.5 rounded transition cursor-pointer ${
+                      invertScope === "range"
+                        ? "bg-indigo-600 text-white shadow-2xs font-extrabold"
+                        : "text-slate-600 hover:text-slate-900"
+                    }`}
+                    title="Invert only a select range of toolpath points"
+                    id="invert-scope-range-btn"
+                  >
+                    Range
+                  </button>
+                </div>
               </div>
-              <kbd className="px-1.5 py-0.2 bg-indigo-50 border border-indigo-200 text-indigo-700 rounded text-[9px] font-mono font-bold shadow-2xs">
-                I
-              </kbd>
-            </button>
+
+              {/* Range Configuration controls */}
+              {invertScope === "range" && (
+                <div className="p-2 bg-indigo-50/25 border-b border-indigo-100 space-y-1.5 font-mono text-[10px] animate-fadeIn">
+                  <div className="flex items-center justify-between gap-1 text-slate-700 flex-wrap">
+                    {/* From # */}
+                    <div className="flex items-center gap-1">
+                      <span className="font-bold text-[9px] text-slate-500 uppercase">From:</span>
+                      <div className="flex items-center">
+                        <button
+                          type="button"
+                          onClick={() => onUpdateInvertRangeStart?.(Math.max(1, invertRangeStart - 1))}
+                          className="w-4 h-4 flex items-center justify-center bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-l border border-slate-300 text-[10px] font-bold cursor-pointer"
+                        >
+                          -
+                        </button>
+                        <input
+                          type="number"
+                          min={1}
+                          max={segmentPoints.length}
+                          value={invertRangeStart}
+                          onChange={(e) => {
+                            const val = parseInt(e.target.value, 10);
+                            if (!isNaN(val)) onUpdateInvertRangeStart?.(Math.max(1, Math.min(val, segmentPoints.length)));
+                          }}
+                          className="w-8 h-4 text-center bg-white border-y border-slate-300 text-slate-900 font-bold text-[10px] focus:outline-none focus:border-indigo-500 font-mono"
+                          id="invert-range-start-input"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => onUpdateInvertRangeStart?.(Math.min(segmentPoints.length, invertRangeStart + 1))}
+                          className="w-4 h-4 flex items-center justify-center bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-r border border-slate-300 text-[10px] font-bold cursor-pointer"
+                        >
+                          +
+                        </button>
+                      </div>
+                      {selectedPointIndex !== null && (
+                        <button
+                          type="button"
+                          onClick={() => onUpdateInvertRangeStart?.(selectedPointIndex + 1)}
+                          className="text-[8px] px-1 py-0.5 bg-white hover:bg-indigo-50 text-indigo-700 rounded border border-indigo-200 cursor-pointer shadow-2xs font-semibold"
+                          title={`Set 'From' to selected point #${selectedPointIndex + 1}`}
+                        >
+                          #{selectedPointIndex + 1}
+                        </button>
+                      )}
+                    </div>
+
+                    {/* To # */}
+                    <div className="flex items-center gap-1">
+                      <span className="font-bold text-[9px] text-slate-500 uppercase">To:</span>
+                      <div className="flex items-center">
+                        <button
+                          type="button"
+                          onClick={() => onUpdateInvertRangeEnd?.(Math.max(1, invertRangeEnd - 1))}
+                          className="w-4 h-4 flex items-center justify-center bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-l border border-slate-300 text-[10px] font-bold cursor-pointer"
+                        >
+                          -
+                        </button>
+                        <input
+                          type="number"
+                          min={1}
+                          max={segmentPoints.length}
+                          value={invertRangeEnd}
+                          onChange={(e) => {
+                            const val = parseInt(e.target.value, 10);
+                            if (!isNaN(val)) onUpdateInvertRangeEnd?.(Math.max(1, Math.min(val, segmentPoints.length)));
+                          }}
+                          className="w-8 h-4 text-center bg-white border-y border-slate-300 text-slate-900 font-bold text-[10px] focus:outline-none focus:border-indigo-500 font-mono"
+                          id="invert-range-end-input"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => onUpdateInvertRangeEnd?.(Math.min(segmentPoints.length, invertRangeEnd + 1))}
+                          className="w-4 h-4 flex items-center justify-center bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-r border border-slate-300 text-[10px] font-bold cursor-pointer"
+                        >
+                          +
+                        </button>
+                      </div>
+                      {selectedPointIndex !== null && (
+                        <button
+                          type="button"
+                          onClick={() => onUpdateInvertRangeEnd?.(selectedPointIndex + 1)}
+                          className="text-[8px] px-1 py-0.5 bg-white hover:bg-indigo-50 text-indigo-700 rounded border border-indigo-200 cursor-pointer shadow-2xs font-semibold"
+                          title={`Set 'To' to selected point #${selectedPointIndex + 1}`}
+                        >
+                          #{selectedPointIndex + 1}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between text-[9px] text-slate-500 pt-0.5">
+                    <span>
+                      Range: <strong className="text-indigo-700">{invertRangeCount} points</strong> (#{resolvedInvertStart} ➔ #{resolvedInvertEnd})
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onUpdateInvertRangeStart?.(1);
+                        onUpdateInvertRangeEnd?.(segmentPoints.length);
+                      }}
+                      className="text-[8px] text-slate-400 hover:text-indigo-600 underline cursor-pointer"
+                    >
+                      Reset (1-{segmentPoints.length})
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Invert Execution Button */}
+              <button
+                type="button"
+                onClick={handleExecuteInvert}
+                disabled={segmentPoints.length < 2 || (invertScope === "range" && invertRangeCount < 2)}
+                className="w-full py-1.5 px-3 bg-white hover:bg-indigo-50 text-indigo-700 hover:text-indigo-900 disabled:opacity-40 disabled:cursor-not-allowed font-mono text-[10px] font-bold uppercase transition flex items-center justify-between cursor-pointer select-none shadow-2xs"
+                id="invert-toolpath-btn"
+                title={`Invert toolpath ${invertScope === "range" ? `from #${resolvedInvertStart} to #${resolvedInvertEnd}` : "entire layer"} (Hotkey: I)`}
+              >
+                <div className="flex items-center gap-1.5">
+                  <ArrowLeftRight className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
+                  <span>
+                    {invertScope === "range"
+                      ? `Invert Range (#${resolvedInvertStart} ⇄ #${resolvedInvertEnd})`
+                      : "Invert Path (All Points)"}
+                  </span>
+                </div>
+                <kbd className="px-1.5 py-0.2 bg-indigo-50 border border-indigo-200 text-indigo-700 rounded text-[9px] font-mono font-bold shadow-2xs">
+                  I
+                </kbd>
+              </button>
+            </div>
           )}
 
           {onToggleHoverReorder && (
@@ -628,6 +812,10 @@ export default function PointListSidebar({
                 const seqIdx = hoverSequencedIds.indexOf(pt.id);
                 const isSequencedInHover = seqIdx !== -1;
                 const assignedSeqNum = isSequencedInHover ? hoverReorderStartNum + seqIdx : null;
+                const isInInvertRange =
+                  invertScope === "range" &&
+                  idy >= resolvedInvertStart - 1 &&
+                  idy <= resolvedInvertEnd - 1;
 
                 return (
                   <tr
@@ -642,6 +830,8 @@ export default function PointListSidebar({
                          ? "bg-violet-50/80 border-l-[3px] border-l-violet-600 text-slate-900 font-medium"
                          : isSelected 
                          ? "bg-indigo-50 border-y border-indigo-200 text-indigo-900 font-medium" 
+                         : isInInvertRange
+                         ? "bg-indigo-50/40 border-l-[3px] border-l-indigo-400 text-slate-900 font-medium"
                          : "hover:bg-slate-100/80"
                      } ${
                        isDragOver ? "border-t-[3px] border-indigo-600 bg-indigo-50/70" : ""
@@ -722,6 +912,11 @@ export default function PointListSidebar({
                           <span className="font-bold underline decoration-dotted decoration-indigo-400/75 group-hover:decoration-solid group-hover:text-indigo-800 text-indigo-650" title="Click to edit point order index">
                             {idy + 1}
                           </span>
+                          {isInInvertRange && !isSequencedInHover && (
+                            <span className="px-1 py-0.2 bg-indigo-600 text-white rounded text-[8px] font-bold font-mono shadow-2xs" title={`Invert Range: included in points #${resolvedInvertStart} to #${resolvedInvertEnd}`}>
+                              ⇄
+                            </span>
+                          )}
                           {isSequencedInHover && (
                             <span className="px-1 py-0.2 bg-violet-600 text-white rounded text-[8px] font-bold font-mono shadow-2xs" title={`Assigned #${assignedSeqNum} in hover reorder`}>
                               #{assignedSeqNum}

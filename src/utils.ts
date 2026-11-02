@@ -208,6 +208,55 @@ export function reverseToolpathPoints(points: ToolpathPoint[]): ToolpathPoint[] 
 }
 
 /**
+ * Inverts the toolpath direction of a specific range of points within a layer.
+ * If start === 0 and end === points.length - 1, performs full-segment reversal.
+ * Otherwise, reverses only the points within [startIndex, endIndex] while keeping
+ * points outside the range in their exact positions.
+ */
+export function reverseToolpathRange(
+  points: ToolpathPoint[],
+  startIndex: number = 0,
+  endIndex: number = points.length - 1
+): ToolpathPoint[] {
+  if (points.length <= 1) return [...points];
+
+  const start = Math.max(0, Math.min(startIndex, endIndex));
+  const end = Math.min(points.length - 1, Math.max(startIndex, endIndex));
+
+  if (start >= end) return [...points];
+
+  // If the range spans the entire segment, use the full reverseToolpathPoints
+  if (start === 0 && end === points.length - 1) {
+    return reverseToolpathPoints(points);
+  }
+
+  const prefix = points.slice(0, start);
+  const sub = points.slice(start, end + 1);
+  const suffix = points.slice(end + 1);
+
+  // Reverse sub-range coordinates
+  const reversedSub = [...sub].reverse().map((pt) => {
+    let nextType = pt.type;
+    const trimmed = pt.type.trim();
+    if (/^start of line dispense$/i.test(trimmed)) {
+      nextType = "End of Line Dispense";
+    } else if (/^end of line dispense$/i.test(trimmed)) {
+      nextType = "Start of Line Dispense";
+    }
+    return {
+      ...pt,
+      type: nextType
+    };
+  });
+
+  const combined = [...prefix, ...reversedSub, ...suffix];
+  return combined.map((pt, idx) => ({
+    ...pt,
+    originalIndex: idx
+  }));
+}
+
+/**
  * Reorders layer points by placing sequenced points starting at startNumber (1-based index),
  * keeping points before startNumber intact, then placing sequenced points in their hovered order,
  * followed by remaining unsequenced points.
